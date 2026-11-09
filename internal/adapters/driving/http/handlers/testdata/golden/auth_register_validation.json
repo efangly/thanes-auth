@@ -1,0 +1,7 @@
+{
+  "status": 400,
+  "body": {
+    "message": "tenantId is required; password is required",
+    "success": false
+  }
+}

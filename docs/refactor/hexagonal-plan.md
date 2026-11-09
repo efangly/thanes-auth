@@ -1,0 +1,191 @@
+# แผนปรับโครงสร้าง smtrack-authentication ให้เป็น Hexagonal อย่างสมบูรณ์ + ปิดช่องโหว่
+
+## Context
+
+โปรเจคนี้ **เป็น hexagonal อยู่แล้วในเชิงโครงสร้าง** (`internal/core/{domain,ports,services}`, `internal/adapters/{driven,driving}`, wiring ใน `main.go`)
+แต่ยังมี infrastructure รั่วเข้า core 7 จุด (L1–L7) และจาก security review พบช่องโหว่ที่ใช้งานได้จริงใน production (C1, H1–H3, M1–M4, L1–L4)
+
+เป้าหมาย:
+1. ปิดช่องโหว่ร้ายแรงก่อน (Phase S) — deploy ได้ทันที
+2. อุดรอยรั่ว hexagonal ทีละ phase โดย **ไม่เปลี่ยนพฤติกรรม API** (ยกเว้นที่ระบุว่าเป็น security fix) และ **คง layout แบบ per-layer เดิม**
+3. ปิดท้ายด้วย architecture test ที่บังคับกฎ dependency อัตโนมัติ
+
+ข้อตกลงที่ใช้ทุก phase:
+- 1 phase = 1 PR (Phase S แยกย่อยได้หลาย PR) ตั้งชื่อ branch `refactor/phase-N-<slug>` / `fix/sec-<id>`
+- ทุก PR ต้องผ่าน: `go build ./...` · `go vet ./...` · `gofmt -l .` (ว่าง) · `go test ./...` · e2e ใน `test/e2e`
+- เปลี่ยน port signature → อัปเดต mock ทั้ง `internal/core/services/mocks_test.go` และ `internal/adapters/driving/http/handlers/handlers_test.go`
+- คง error discipline: domain error ไม่ใช้ `%w`, infra error wrap `%w` ที่ adapter
+- ของที่ **ตั้งใจคงไว้ใน core**: `pkg/logger`, `uuid.New()`, `time.Now()`
+- คัดลอกแผนนี้ไปไว้ที่ `docs/refactor/hexagonal-plan.md` ใน PR แรก แล้วติ๊ก checkbox ตามความคืบหน้า
+
+---
+
+## สถานะ (อัปเดต 2026-10-21)
+
+| Phase | Branch | Commit | สถานะ |
+|---|---|---|---|
+| S1 ward guard (C1) | `fix/sec-c1-ward-guard` | `b8d249b` | ✅ push แล้ว |
+| S2 role ceiling (H1) | `fix/sec-h1-role-ceiling` | `d140a89` | ✅ push แล้ว |
+| S3 tenant scope (H2, M2) | `fix/sec-h2-tenant-scope` | `e1b01ab` | ✅ push แล้ว |
+| S4 disabled login (H3) | `fix/sec-h3-disabled-login` | `6c84016` | ✅ push แล้ว |
+| S5 trusted proxy (M1) | `fix/sec-m1-trusted-proxy` | `6dd002d` | ✅ push แล้ว (ops ต้องตั้ง `TRUSTED_PROXIES`) |
+| 0 safety net | `refactor/phase-0-safety-net` | `e638df9` | ✅ push แล้ว |
+| 1 Actor | `refactor/phase-1-actor` | `224d5b1` | ✅ push แล้ว |
+| 2 security ports | `refactor/phase-2-security-ports` | `7c54b78` | ✅ push แล้ว |
+| 3 domain.File (M4) | `refactor/phase-3-domain-file` | `3310d15` | ✅ push แล้ว |
+| 4 filter/patch (M3) | `refactor/phase-4-typed-filters-patches` | `595e2e0` | ✅ push แล้ว |
+| 5 cache codec | `refactor/phase-5-cache-codec` | `5458e88` | ✅ push แล้ว |
+| 6 persistence model | — | — | ⏸ เลื่อนไปทำพร้อมการปรับ DB ของ ward → `next-session-ward-db.md` |
+| 7 wrap-up (บางส่วน) | `refactor/phase-7-wrap-up` | — | ✅ ดูหัวข้อ Phase 7 |
+
+**PR แบบ stacked** (ยังไม่ได้เปิด): base ของแต่ละ PR คือ branch แถวก่อนหน้า ส่วน S1 ใช้ base เป็น `main`
+PR แรกจะรวม `e42e5a8` (e2e tests) ที่อยู่ใน `main` ของเครื่อง dev แต่ไม่เคย push เข้า `origin/main` ไปด้วย
+Phase S deploy ก่อนได้ (merge ถึง S5) เพราะไม่ขึ้นกับ phase อื่น
+
+---
+
+## Phase S — Security hotfix (ทำก่อนทุกอย่าง, deploy ทันที)
+
+### S1 — ward update/delete ไม่มีการตรวจสิทธิ์ (C1, Critical)
+- [x] `router.go`: ใส่ `RolesGuard(RoleSuper, RoleService)` ให้ `PUT /ward/:id` และ `DELETE /ward/:id`
+- [x] test: `internal/adapters/driving/http/router_test.go` (7 role × PUT/DELETE) + e2e `test/e2e/ward_guard_test.go`
+
+### S2 — Role ceiling: กันการยกระดับสิทธิ์ (H1, High)
+- [x] เพิ่ม `domain.Role` rank/กฎ `CanAssign` (ชั่วคราวเป็น method บน `ports.JwtPayload`, ย้ายไป `domain.Actor` ใน Phase 1)
+  - SUPER → ได้ทุก role · SERVICE → ทุก role ยกเว้น SUPER · ADMIN/LEGACY_ADMIN → USER, LEGACY_USER, GUEST
+  - ห้ามเปลี่ยน role ของตัวเอง
+- [x] enforce ใน `userService.Create` และ `userService.Update` (เมื่อมี key `role`) — คืน domain error (ไม่ wrap)
+- [x] admin แก้/ลบ user ได้เฉพาะเมื่อ role **ปัจจุบัน** ของเป้าหมายอยู่ในชุดที่ตัวเอง assign ได้
+- [x] unit test ทุกคู่ (caller role × target role) ใน `user_service_test.go`
+
+### S3 — Tenant scope ของ admin (H2 + M2, High)
+- [x] `userService.FindOne/Update/Remove`: ADMIN/LEGACY_ADMIN ได้เฉพาะ user ที่ `Ward.HosID == caller.HosID`; ย้าย `wardId` ได้เฉพาะ ward ใน hospital เดียวกัน (ต้องฉีด `WardRepository` เข้า `userService`)
+- [x] `hospitalService.FindOne`, `wardService.FindOne`: ใช้ scope เดียวกับ `buildHospitalConditions` / `buildWardConditions`
+- [x] `router.go`: `/auth/audit` → `RolesGuard(RoleSuper, RoleService)`
+- [x] test ข้ามโรงพยาบาล → 403/404 ทุก endpoint ที่แตะ
+
+### S4 — บัญชีที่ถูกปิดยัง login ได้ (H3, High)
+- [x] `authService.ValidateUser`: ถ้า `!user.Status` → `nil, nil` (handler ตอบ "Invalid username or password" เหมือนรหัสผิด) โดยยังทำ bcrypt compare ให้เวลาเท่าเดิม
+- [x] test ใน `auth_service_test.go` + e2e `auth_login_test.go`
+
+### S5 — Rate limit หลัง KrakenD (M1, Medium)
+- [x] `config.Config` เพิ่ม `TrustedProxies []string` จาก env `TRUSTED_PROXIES` (comma-separated CIDR/IP)
+- [x] ~~`fiber.Config` `TrustProxy` + `ProxyHeader: X-Forwarded-For`~~ — **เปลี่ยนแนวทาง**: Fiber คืน IP *ซ้ายสุด* ของ XFF ซึ่ง client ปลอมได้ จึงใช้ `middleware.TrustedProxies.ClientIP` เป็น `KeyGenerator` ของ limiter แทน (เดิน XFF จากขวา ข้าม trusted proxy); ถ้าไม่ตั้ง env → พฤติกรรมเดิม
+- [x] เพิ่มใน `.env.example`, `k8s/deploy.yaml` (`optional: true`)
+- [x] test: `middleware/client_ip_test.go` + `router_test.go` (client แยก bucket, spoof ซ้ายสุดไม่ช่วย, ไม่ตั้ง env → ไม่เชื่อ header)
+- [ ] **ops**: ใส่ CIDR ของ KrakenD ลง configmap `authentication-config` key `TRUSTED_PROXIES`
+
+---
+
+## Phase 0 — Safety net + เอกสารการตัดสินใจ
+
+- [x] Golden JSON snapshot test ของ response ทุก endpoint (success + error) — **ย้ายที่**: ทำที่ระดับ handler (mock service) แทน e2e เพื่อให้ deterministic และรันใน `go test ./...`: `internal/adapters/driving/http/handlers/golden_test.go` + `testdata/golden/*.json` (33 เคส) + flag `-update`; ยืนยันด้วยว่า password hash ไม่หลุดใน response
+- [x] `internal/arch_test.go`: `go list` direct imports ของ `internal/core/...` ห้าม `internal/adapters`, `config`, `gofiber`, `gorm.io`, `golang-jwt`, `x/crypto`, `redis`, `rabbitmq`, `mime/multipart`, `net/http`
+  - [x] **allowlist** แบบ ratchet (`importAllowlist`) — entry ที่ไม่เกิดแล้วทำให้เทสต์ fail ต้องลบออก
+  - [x] เพิ่ม: กฎทิศทาง layer (domain ห้าม import ports/services; ports ห้าม import services) — ย้ายมาจาก Phase 7
+  - [x] เพิ่ม: ตรวจ struct tag `gorm`/`json` ใน `core/domain` (go list มองไม่เห็น tag) พร้อม `tagAllowlist` → Phase 6
+- [x] `GLOSSARY.md`: Hospital, Ward, Development hospital, User, Actor, Role, Guest, Admin tier, Hospital-scoped admin, Role ceiling, Tenant scope, Status, Audit log
+- [x] `docs/adr/0001-domain-free-of-infrastructure-tags.md`
+- [x] `docs/adr/0002-cache-aside-in-services.md`
+
+## Phase 1 — `JwtPayload` → `domain.Actor` (L6)
+
+- [x] สร้าง `internal/core/domain/actor.go`: `type Actor struct{ ID, Name string; Role Role; HosID, WardID string }` + `IsAdminTier()`, `CanAssign(Role)` (ย้ายจาก S2)
+- [x] ลบ `ports.JwtPayload`; แทนที่ทุก `caller *ports.JwtPayload` ด้วย `*domain.Actor` ใน `ports/services.go`, services, handlers (`getCaller`), middleware (`auth.go`, `roles.go`), mocks, `injectCaller`
+- [x] switch แบบ string literal ใน `build*Conditions` (`case "ADMIN"`) → ใช้ค่าคงที่ `domain.Role…`
+- [x] อัปเดต CLAUDE.md ส่วนที่อ้าง `ports.JwtPayload.IsAdminTier()`
+
+## Phase 2 — Security ports: token + password hasher (L2, L3, L2-sec, L4-sec)
+
+- [x] `ports/security.go`: `TokenIssuer` (`IssuePair(domain.Actor) (TokenPair, error)` — ไม่มี ctx เพราะไม่ใช้, `VerifyAccess`, `VerifyRefresh`) และ `PasswordHasher` (`Hash`, `Compare`, `CompareDummy`)
+- [x] `adapters/driven/security/jwt.go` — secret + TTL จาก config, ย้าย `parseDuration` มา; claim `typ: access|refresh` ตรวจตอน verify (ปิด L2)
+  - [ ] **release ถัดไป**: ปฏิเสธ token ที่ไม่มี `typ` (ตอนนี้ยอมรับไว้ เพื่อไม่ให้ทุกคนหลุด login ตอน deploy) — ทำได้หลัง deploy นี้ผ่านไป ≥ `REFRESH_EXPIRE_TIME`
+- [x] `adapters/driven/security/bcrypt.go` — cost 10, dummy hash ผ่าน `CompareDummy`
+- [x] `authService` รับ `TokenIssuer`, `PasswordHasher` แทน `*config.Config`; ลบการเช็ค secret ว่างที่ตายแล้ว
+- [x] `userService` รับ `PasswordHasher`; hash ยังเกิดที่ `Create`/`Update` เท่านั้น
+- [x] `LoginResult`/`RefreshResult` ไม่มีแท็กแล้ว; JSON อยู่ที่ `dto.LoginResponse` / `dto.RefreshResponse` (golden ผ่านโดยไม่ต้อง update)
+- [x] `middleware.JWTAuth` / `RefreshJWTAuth` รับ `ports.TokenIssuer`; `router.go` ไม่รู้ secret
+- [x] invalid refresh token → domain error → 401 (ปิด L4)
+- [x] ลบ allowlist `golang-jwt`, `bcrypt`, `config` ออกจาก arch test
+
+## Phase 3 — `domain.File` แทน multipart (L4, M4)
+
+- [x] `domain/file.go`: `File{Name, ContentType string; Data []byte}` — ใช้ `[]byte` แทน `io.Reader` เพราะต้องอ่านทั้งไฟล์มาตรวจขนาด/ชนิดอยู่แล้ว
+- [x] `FileUploadPort.Upload(ctx, *domain.File, path)` (adapter ใช้ `NewRequestWithContext`); service ports รับ `*domain.File`
+- [x] `handlers.formFile(c, "image")` — cap = `fiber.DefaultBodyLimit` (4MB; **ไม่ใช่ 5MB** ตามแผนเดิมเพราะ body limit ของ Fiber ตัดที่ 4MB ก่อนอยู่แล้ว), sniff MIME จาก bytes → jpeg/png/webp เท่านั้น, อื่นๆ → 400 (ปิด M4)
+- [x] upload adapter: filename ผ่าน `safeFilename` + `mime.FormatMediaType` (ปิด header injection)
+- [x] ลบ allowlist `mime/multipart` — `importAllowlist` ว่างแล้ว
+
+## Phase 4 — Filter และ Patch แบบมี type (L5)
+
+- [x] `ports`: `UserFilter{HosID; ExcludeHosIDs; ExcludeRoles}`, `WardFilter{HosID; ExcludeHosIDs}`, `HospitalFilter{ID; WardID; ExcludeIDs}`
+- [x] `build*Conditions` → `build*Filter` คืน filter + cache key; repository สร้าง `Where` แบบ quoted เอง (`NOT IN` แทน `!=` หลายตัว)
+  - [x] **พบและแก้บั๊ก**: `userRepository.FindAll` join `Wards` เฉพาะเมื่อมี `hosId` → filter ของ SERVICE (exclude อย่างเดียว) ได้ SQL `SELECT * FROM "Users" WHERE "Wards"."hosId" != $1` ซึ่ง Postgres ปฏิเสธ → `GET /auth/user` ของ SERVICE เป็น 500 ตอนนี้ join ทุกครั้งที่มีเงื่อนไขโรงพยาบาล (ยืนยันด้วย DryRun test, ยังไม่ได้รันกับ Postgres จริง)
+- [x] `domain.UserPatch`, `WardPatch`, `HospitalPatch` (`domain/patch.go`)
+- [x] DTO `ToMap()` → `ToPatch()`; handler strip `Role/Status/WardID` ด้วยการตั้งเป็น nil
+- [x] repository แปลง patch → column map ใน `database/columns.go` และ stamp `updateAt` เอง
+- [x] audit: `services/audit_changes.go` สร้าง changes จาก patch (ไม่มี password เลย); `sanitizeAuditChanges` คงไว้เป็นชั้นป้องกันที่สอง — **หมายเหตุ**: changes ของ UPDATE ไม่มี `updateAt` แล้ว
+- [x] เอา `pic` ออกจาก `CreateUserRequest`/`UpdateUserRequest` และ `hosPic` ออกจาก DTO hospital (ปิด M3)
+- [x] อัปเดต CLAUDE.md หัวข้อ "Partial updates"
+- [x] เพิ่มเทสต์ที่ขาด: `userService.Update` hash รหัสผ่าน และ audit ไม่บันทึกรหัสผ่าน
+
+## Phase 5 — Cache codec + ไม่เก็บ secret ลง cache (L7)
+
+- [x] `CachePort`: `Get(ctx, key, dest any) (hit bool, err error)`, `Set(ctx, key, v any, ttl time.Duration) error`, `Del(ctx, prefix) error`
+- [x] Redis adapter เป็นฝ่าย JSON encode/decode (error ถูก wrap `%w`)
+- [x] `domain.User.WithoutSecrets()` / `domain.UsersWithoutSecrets()` (ล้าง hash ของ user ซ้อนใน ward ด้วย, ไม่แก้ของเดิม) — เรียกก่อน `Set` ทุกครั้ง; เทสต์ยืนยันว่าสิ่งที่ส่งเข้า `Set` ไม่มี hash
+  - [x] **เพิ่ม**: audit snapshot ของ user ตอน CREATE/DELETE ก็ผ่าน `WithoutSecrets()` ด้วย — เดิมพึ่ง `json:"-"` อย่างเดียว ซึ่ง Phase 6 จะถอดออก
+- [x] ลบ `encoding/json` ออกจาก user/ward/hospital services (เหลือใน audit service เพื่อ marshal changes — เป็น stdlib ไม่ผิดกฎ)
+- [x] TTL เป็นค่าคงที่ `listTTL = 10h`, `itemTTL = 24h` (`services/cache_ttl.go`)
+- [x] mock cache เก็บค่าที่ `Set` ได้รับไว้ตรวจ และ decode ผ่าน JSON เหมือน adapter จริง; เพิ่มเทสต์ cascade invalidation ตาม ADR 0002
+
+## Phase 6 — Persistence model + response DTO; ถอดแท็กออกจาก domain (L1)
+
+- [ ] `internal/adapters/driven/database/models.go`: `userModel`, `wardModel`, `hospitalModel`, `auditLogModel` พร้อมแท็ก `gorm` และ `TableName()` เดิม (`"Users"`, `"Wards"`, `"Hospitals"`, …)
+- [ ] mapper `toDomain()` / `fromDomain()` ต่อ model; repository ใช้ model ภายในเท่านั้น
+- [ ] `dto/`: `UserResponse`, `WardResponse`, `HospitalResponse`, `AuditLogResponse` + `From…()` — handler ไม่ serialize domain ตรงอีกต่อไป (`UserResponse` ไม่มี password)
+- [ ] ถอดแท็ก `gorm:` และ `json:` ทั้งหมดออกจาก `internal/core/domain/*.go`
+- [ ] golden snapshot จาก Phase 0 ต้องผ่าน **โดยไม่ต้อง `-update`**
+- [ ] ตรวจ AutoMigrate (ถ้ามีใน `postgres.go`) ใช้ model ใหม่และไม่สร้างการเปลี่ยน schema
+- [ ] **cache**: เมื่อถอดแท็ก JSON ใน Redis จะเปลี่ยนรูป (ชื่อ field ของ Go) → เปลี่ยน prefix ของ cache key หรือ flush ตอน deploy มิฉะนั้นค่าเก่าจะ decode ได้ไม่ครบ (เช่น `createAt` ไม่ตรงกับ `CreatedAt`)
+- [ ] **audit**: snapshot ของ CREATE/DELETE ตอนนี้ marshal จาก domain struct ตรงๆ → เมื่อไม่มีแท็กจะได้ชื่อ field แบบ Go ต้องให้ audit ใช้ map/DTO ที่มีชื่อแบบ API เหมือน `*PatchChanges`
+- [ ] **รอแผนปรับโครงสร้าง DB ของ ward** ก่อนเริ่ม phase นี้ เพราะ persistence model + mapper ผูกกับ schema โดยตรง
+
+## Phase 7 — ปิดงาน
+
+- [ ] `importAllowlist` ว่างแล้วตั้งแต่ Phase 3 ✅ — **`tagAllowlist` ยังค้าง**, รอ Phase 6
+- [x] CI รัน `go vet` + `gofmt` + `go test ./...` ก่อน build image และแก้ `IMAGE_NAME` จาก `2.0.2ß` (พิมพ์ผิดบน `main` ตั้งแต่ `eb12a35` → build-push จะ fail) เป็น `2.1.0`
+- [x] อัปเดต `CLAUDE.md` (CI, กฎ import ที่ arch test บังคับ, หมายเหตุ Phase 6 ค้าง) และ `README.md` (แผนผังโครงสร้าง, คำสั่ง test, ลิงก์ glossary/ADR/plan)
+- [x] ทบทวน `GLOSSARY.md` (ยังตรง) และ ADR — ADR 0001 เปลี่ยน status เป็น "implementation pending (Phase 6)"
+- [x] L3 → ย้ายไป backlog ใน `next-session-ward-db.md`
+
+---
+
+## นอกขอบเขต (ตัดสินใจเลื่อนไว้)
+
+- L1 password policy (เดิม 4–20 ตัวอักษร) — **ยังไม่แก้ในรอบนี้** ตามที่ตกลง; คงไว้ในรายการ security backlog
+
+## ไฟล์หลักที่ถูกแก้
+
+- `internal/core/ports/{services,repositories,cache,upload}.go` + `ports/security.go` (ใหม่)
+- `internal/core/domain/*.go` + `actor.go`, `file.go`, patch types (ใหม่)
+- `internal/core/services/*_service.go`, `mocks_test.go`
+- `internal/adapters/driven/{database,cache,upload}/*.go` + `security/` (ใหม่)
+- `internal/adapters/driving/http/{router.go,handlers/*,middleware/{auth,roles}.go,dto/*}`
+- `main.go`, `config/config.go`, `k8s/deploy.yaml`, `.env.example`, `.github/workflows/main.yaml`
+- `CLAUDE.md`, `README.md`, `GLOSSARY.md`, `docs/adr/*` (ใหม่)
+
+## Verification
+
+แต่ละ phase:
+```bash
+go build ./... && go vet ./... && test -z "$(gofmt -l .)" && go test ./...   # รวม golden + arch test
+go vet -tags=e2e ./test/e2e/                                                 # e2e ต้อง compile ได้
+go test -tags=e2e ./test/e2e/... -v   # ต้องมี Postgres/Redis + E2E_ADMIN_USERNAME/PASSWORD (SUPER หรือ SERVICE)
+```
+Phase S เพิ่มเติม — รันเครื่อง local (Postgres + Redis + `.env`) แล้วยิงด้วย curl:
+- register GUEST → login → `PUT /auth/ward/<id>` ต้องได้ 403
+- ADMIN → `PUT /auth/user/<self>` body `{"role":"SUPER"}` ต้องได้ 400/403
+- ADMIN รพ. A → `GET /auth/user/<user รพ. B>` ต้องได้ 403/404
+- ตั้ง `status=false` → login ต้องได้ 401 "Invalid username or password"
+- ยิง login 11 ครั้งด้วย `X-Forwarded-For` ต่างกันจาก trusted proxy → ไม่โดน 429
