@@ -16,7 +16,7 @@ jobs:
       # Needs the repository secret GITOPS_TOKEN: a token with contents:write
       # on that repository (fine-grained PAT or GitHub App token). The default
       # GITHUB_TOKEN cannot push to another repository.
-      GITOPS_REPO: "efangly/thanes-auth"
+      GITOPS_REPO: "efangly/thanes-configs"
       # Directory inside the GitOps repository that holds this service's
       # manifests; Argo CD syncs it (argocd/application.yaml there).
       GITOPS_PATH: "thanes-auth"

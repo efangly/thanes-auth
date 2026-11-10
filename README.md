@@ -237,7 +237,7 @@ docker run -p 8080:8080 --env-file .env smtrack-auth-service
 
 The service deploys to the `smtrack` namespace with 2 replicas.
 
-The Kubernetes manifests live in the GitOps repository (`efangly/thanes-auth`, directory `thanes-auth/`), not here.
+The Kubernetes manifests live in the GitOps repository (`efangly/thanes-configs`, directory `thanes-auth/`), not here.
 Argo CD syncs that directory. Pushing to `main` builds the image and rewrites the image tag there (`.github/workflows/main.yaml`).
 
 The tenant/department version runs beside the old one (ADR 0004). `deploy.yaml` is the old
