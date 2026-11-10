@@ -10,11 +10,11 @@ import (
 )
 
 func actor(role domain.Role, tenantID string) *domain.Actor {
-	return &domain.Actor{ID: "C1", Role: role, TenantID: tenantID}
+	return &domain.Actor{ID: "C1", Role: role, Tier: tierFor(role), TenantID: tenantID}
 }
 
 func actorIn(role domain.Role, tenantID string, departmentIDs ...string) *domain.Actor {
-	return &domain.Actor{ID: "C1", Role: role, TenantID: tenantID, DepartmentIDs: departmentIDs}
+	return &domain.Actor{ID: "C1", Role: role, Tier: tierFor(role), TenantID: tenantID, DepartmentIDs: departmentIDs}
 }
 
 // --- users ---
@@ -31,7 +31,6 @@ func TestUserService_FindOne_TenantScope(t *testing.T) {
 		{"SERVICE reads any tenant", actor(domain.RoleService, ""), "U2", "T2", ""},
 		{"ADMIN reads own tenant", actor(domain.RoleAdmin, "T1"), "U2", "T1", ""},
 		{"ADMIN cannot read other tenant", actor(domain.RoleAdmin, "T1"), "U2", "T2", "user not found"},
-		{"LEGACY_ADMIN cannot read other tenant", actor(domain.RoleLegacyAdmin, "T1"), "U2", "T2", "user not found"},
 		{"ADMIN without tenant reads nobody", actor(domain.RoleAdmin, ""), "U2", "", "user not found"},
 		{"USER cannot read another user", actor(domain.RoleUser, "T1"), "U2", "T1", "user not found"},
 		{"USER reads self", actor(domain.RoleUser, "T1"), "C1", "T9", ""},
@@ -65,7 +64,6 @@ func TestUserService_UpdateAndRemove_TenantScope(t *testing.T) {
 	}{
 		{"ADMIN own tenant", actor(domain.RoleAdmin, "T1"), "T1", ""},
 		{"ADMIN other tenant", actor(domain.RoleAdmin, "T1"), "T2", "user not found"},
-		{"LEGACY_ADMIN other tenant", actor(domain.RoleLegacyAdmin, "T1"), "T2", "user not found"},
 		{"SERVICE other tenant", actor(domain.RoleService, "T1"), "T2", ""},
 		{"SUPER other tenant", actor(domain.RoleSuper, ""), "T2", ""},
 	}
@@ -179,7 +177,6 @@ func TestDepartmentService_FindOne_Scope(t *testing.T) {
 		{"SERVICE sees other", actor(domain.RoleService, ""), false, "T2", true},
 		{"ADMIN sees every department of own tenant", actor(domain.RoleAdmin, "T1"), false, "T1", true},
 		{"ADMIN does not see other tenant's", actor(domain.RoleAdmin, "T1"), false, "T2", false},
-		{"LEGACY_ADMIN does not see other tenant's", actor(domain.RoleLegacyAdmin, "T1"), false, "T2", false},
 		{"USER sees a linked department", actorIn(domain.RoleUser, "T1", "D9"), false, "T1", true},
 		{"USER does not see an unlinked department", actorIn(domain.RoleUser, "T1", "D1"), false, "T1", false},
 		{"USER does not see another tenant's department", actorIn(domain.RoleUser, "T1", "D9"), false, "T2", false},

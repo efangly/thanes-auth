@@ -51,6 +51,7 @@ func validClaims() jwt.MapClaims {
 		"jti":      "jti-1",
 		"name":     "Test User",
 		"role":     "ADMIN",
+		"tier":     "ADMIN",
 		"tenantId": "T1",
 		"exp":      float64(time.Now().Add(1 * time.Hour).Unix()),
 		"iat":      float64(time.Now().Unix()),
@@ -204,7 +205,7 @@ func TestRefreshJWTAuth_RejectsAccessToken(t *testing.T) {
 	app.Use(RefreshJWTAuth(testIssuer()))
 	app.Post("/refresh", func(c fiber.Ctx) error { return c.SendString("ok") })
 
-	pair, err := testIssuer().IssuePair(domain.Actor{ID: "U1", Role: domain.RoleAdmin})
+	pair, err := testIssuer().IssuePair(domain.Actor{ID: "U1", Role: domain.RoleAdmin, Tier: domain.TierAdmin})
 	require.NoError(t, err)
 	req := httptest.NewRequest(http.MethodPost, "/refresh", strings.NewReader(`{"token":"`+pair.Access+`"}`))
 	req.Header.Set("Content-Type", "application/json")

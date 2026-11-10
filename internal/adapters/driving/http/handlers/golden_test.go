@@ -109,8 +109,8 @@ func goldenAuditLog() domain.AuditLog {
 }
 
 var (
-	goldenSuper = &domain.Actor{ID: "UID-0", Name: "Root", Role: "SUPER", TenantID: "TID-1", DepartmentIDs: []string{"DID-1"}}
-	goldenGuest = &domain.Actor{ID: "UID-9", Name: "Guest", Role: "GUEST", TenantID: "TID-1", DepartmentIDs: []string{"DID-1"}}
+	goldenSuper = &domain.Actor{ID: "UID-0", Name: "Root", Role: "SUPER", Tier: tierFor("SUPER"), TenantID: "TID-1", DepartmentIDs: []string{"DID-1"}}
+	goldenGuest = &domain.Actor{ID: "UID-9", Name: "Guest", Role: "GUEST", Tier: tierFor("GUEST"), TenantID: "TID-1", DepartmentIDs: []string{"DID-1"}}
 
 	errDomain   = errors.New("username already exists")
 	errInternal = fmt.Errorf("database error: %w", errors.New(`pq: relation "Users" does not exist`))
@@ -145,7 +145,8 @@ func goldenCases() []goldenCase {
 		LoginFn: func(_ context.Context, _ *domain.User) (*ports.LoginResult, error) {
 			return &ports.LoginResult{
 				Token: "access.jwt", RefreshToken: "refresh.jwt", ID: "UID-1", Name: ptr("John Doe"),
-				TenantID: "TID-1", DepartmentIDs: []string{"DID-1"}, Role: "USER", Pic: nil,
+				TenantID: "TID-1", DepartmentIDs: []string{"DID-1"}, Role: "USER", Tier: domain.TierMember,
+				TenantKind: domain.TenantKindHospital, Permissions: []string{"result:view"}, Pic: nil,
 			}, nil
 		},
 		RefreshTokensFn: func(_ context.Context, _ string) (*ports.RefreshResult, error) {
@@ -179,6 +180,9 @@ func goldenCases() []goldenCase {
 		},
 		RemoveFn:  func(_ context.Context, _ string, _ *domain.Actor) (*domain.User, error) { return user, nil },
 		RestoreFn: func(_ context.Context, _ string, _ *domain.Actor) (*domain.User, error) { return user, nil },
+		AccessReportFn: func(_ context.Context, _ *domain.Actor) ([]ports.AccessEntry, error) {
+			return []ports.AccessEntry{{User: *goldenUser(), Tier: domain.TierMember, Permissions: []string{"result:view"}}}, nil
+		},
 	}
 	emptyUsers := &mockUserService{
 		FindAllFn: func(_ context.Context, _ *domain.Actor) ([]domain.User, error) { return []domain.User{}, nil },
@@ -224,6 +228,41 @@ func goldenCases() []goldenCase {
 		FindAllFn: func(_ context.Context, _ ports.AuditFilter) ([]domain.AuditLog, error) {
 			return []domain.AuditLog{goldenAuditLog()}, nil
 		},
+	}
+
+	labRole := domain.RoleDefinition{
+		Kind: domain.TenantKindLab, Name: "APPROVER", Tier: domain.TierMember, Description: ptr("Approves results"),
+		Permissions: []string{"result:approve"}, CreatedAt: goldenTime, UpdatedAt: goldenTime,
+	}
+	labPermission := domain.Permission{
+		Kind: domain.TenantKindLab, Key: "result:approve", Description: ptr("Approve a lab result"),
+		CreatedAt: goldenTime, UpdatedAt: goldenTime,
+	}
+	okRoles := &mockRoleService{
+		FindRolesFn: func(context.Context, domain.TenantKind, *domain.Actor) ([]domain.RoleDefinition, error) {
+			return []domain.RoleDefinition{labRole}, nil
+		},
+		FindRoleFn: func(context.Context, domain.TenantKind, domain.Role, *domain.Actor) (*domain.RoleDefinition, error) {
+			return &labRole, nil
+		},
+		CreateRoleFn: func(context.Context, *domain.RoleDefinition, *domain.Actor) (*domain.RoleDefinition, error) {
+			return &labRole, nil
+		},
+		UpdateRoleFn: func(context.Context, domain.TenantKind, domain.Role, domain.RolePatch, *domain.Actor) (*domain.RoleDefinition, error) {
+			return &labRole, nil
+		},
+		RemoveRoleFn: func(context.Context, domain.TenantKind, domain.Role, *domain.Actor) error {
+			return errors.New("role is still held by users")
+		},
+		FindPermissionsFn: func(context.Context, domain.TenantKind, *domain.Actor) ([]domain.Permission, error) {
+			return []domain.Permission{labPermission}, nil
+		},
+		CreatePermissionFn: func(context.Context, *domain.Permission, *domain.Actor) (*domain.Permission, error) {
+			return &labPermission, nil
+		},
+	}
+	ro := func(pick func(*RoleHandler) fiber.Handler) func() fiber.Handler {
+		return func() fiber.Handler { return pick(NewRoleHandler(okRoles)) }
 	}
 
 	a := func(svc *mockAuthService, pick func(*AuthHandler) fiber.Handler) func() fiber.Handler {
@@ -293,6 +332,28 @@ func goldenCases() []goldenCase {
 			caller: goldenSuper, h: u(okUsers, func(h *UserHandler) fiber.Handler { return h.Remove })},
 		{name: "user_restore_ok", method: http.MethodPost, route: "/user/:id/restore", target: "/user/UID-1/restore",
 			caller: goldenSuper, h: u(okUsers, func(h *UserHandler) fiber.Handler { return h.Restore })},
+		{name: "user_access_report_ok", method: http.MethodGet, route: "/report/access", target: "/report/access",
+			caller: goldenSuper, h: u(okUsers, func(h *UserHandler) fiber.Handler { return h.AccessReport })},
+
+		// role catalogue
+		{name: "role_findall_ok", method: http.MethodGet, route: "/role", target: "/role?kind=LAB",
+			caller: goldenSuper, h: ro(func(h *RoleHandler) fiber.Handler { return h.FindRoles })},
+		{name: "role_findone_ok", method: http.MethodGet, route: "/role/:kind/:name", target: "/role/LAB/APPROVER",
+			caller: goldenSuper, h: ro(func(h *RoleHandler) fiber.Handler { return h.FindRole })},
+		{name: "role_create_ok", method: http.MethodPost, route: "/role", target: "/role",
+			body:   `{"kind":"LAB","name":"APPROVER","tier":"MEMBER","description":"Approves results","permissions":["result:approve"]}`,
+			caller: goldenSuper, h: ro(func(h *RoleHandler) fiber.Handler { return h.CreateRole })},
+		{name: "role_create_validation", method: http.MethodPost, route: "/role", target: "/role", body: `{"kind":"LAB"}`,
+			caller: goldenSuper, h: ro(func(h *RoleHandler) fiber.Handler { return h.CreateRole })},
+		{name: "role_update_ok", method: http.MethodPut, route: "/role/:kind/:name", target: "/role/LAB/APPROVER",
+			body: `{"permissions":["result:approve"]}`, caller: goldenSuper, h: ro(func(h *RoleHandler) fiber.Handler { return h.UpdateRole })},
+		{name: "role_remove_held", method: http.MethodDelete, route: "/role/:kind/:name", target: "/role/LAB/APPROVER",
+			caller: goldenSuper, h: ro(func(h *RoleHandler) fiber.Handler { return h.RemoveRole })},
+		{name: "permission_findall_ok", method: http.MethodGet, route: "/permission", target: "/permission?kind=LAB",
+			caller: goldenSuper, h: ro(func(h *RoleHandler) fiber.Handler { return h.FindPermissions })},
+		{name: "permission_create_ok", method: http.MethodPost, route: "/permission", target: "/permission",
+			body:   `{"kind":"LAB","key":"result:approve","description":"Approve a lab result"}`,
+			caller: goldenSuper, h: ro(func(h *RoleHandler) fiber.Handler { return h.CreatePermission })},
 
 		// tenants
 		{name: "tenant_create_ok", method: http.MethodPost, route: "/tenant", target: "/tenant", body: `{"name":"Acme Plant","kind":"FACTORY"}`,

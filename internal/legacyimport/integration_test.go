@@ -32,7 +32,8 @@ INSERT INTO "Hospitals" ("id","hosName","hosSeq","hosType","createAt","updateAt"
 INSERT INTO "Wards" ("id","wardName","wardSeq","type","hosId","createAt","updateAt") VALUES
  ('w1','ICU',3,'NEW','h1',now(),now()), ('w2','ER',5,'LEGACY','h2',now(),now()), ('w3','ICU',6,'NEW','h2',now(),now());
 INSERT INTO "Users" ("id","wardId","username","password","role","createAt","updateAt") VALUES
- ('u1','w1','alice','$2a$10$hashhashhash','ADMIN',now(),now()), ('u2','w2','bob','$2a$10$other','USER',now(),now());
+ ('u1','w1','alice','$2a$10$hashhashhash','ADMIN',now(),now()), ('u2','w2','bob','$2a$10$other','USER',now(),now()),
+ ('u3','w2','carol','$2a$10$third','LEGACY_ADMIN',now(),now()), ('u4','w2','dave','$2a$10$fourth','LEGACY_USER',now(),now());
 INSERT INTO "AuditLogs" ("id","entity","entityId","action","createAt") VALUES ('a1','WARD','w1','CREATE',now());
 `
 
@@ -58,7 +59,14 @@ func TestImportAndVerify(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, rep.Problems)
 	assert.Equal(t, 3, rep.Tenants)
-	assert.Equal(t, 2, rep.Users)
+	assert.Equal(t, 4, rep.Users)
+
+	// LEGACY_ADMIN and LEGACY_USER are merged into ADMIN and USER (ADR 0006).
+	var role string
+	require.NoError(t, dst.QueryRow(`SELECT role FROM users WHERE id='u3'`).Scan(&role))
+	assert.Equal(t, "ADMIN", role)
+	require.NoError(t, dst.QueryRow(`SELECT role FROM users WHERE id='u4'`).Scan(&role))
+	assert.Equal(t, "USER", role)
 
 	// Twice: idempotent.
 	rep, err = Import(ctx, old, dst)

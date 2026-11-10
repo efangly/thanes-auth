@@ -30,6 +30,8 @@ const (
 	AuditEntityUser       AuditEntity = "USER"
 	AuditEntityDepartment AuditEntity = "DEPARTMENT"
 	AuditEntityTenant     AuditEntity = "TENANT"
+	AuditEntityRole       AuditEntity = "ROLE"
+	AuditEntityPermission AuditEntity = "PERMISSION"
 )
 
 // AuditLog is an immutable record of something that happened.

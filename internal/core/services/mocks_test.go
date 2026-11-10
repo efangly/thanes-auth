@@ -11,6 +11,126 @@ import (
 	"github.com/efangly/smtrack-authentication/internal/core/ports"
 )
 
+// tierFor is the tier the default catalogue gives role, for building test
+// callers. An unknown role has no tier.
+func tierFor(role domain.Role) domain.Tier {
+	if tier, ok := role.PlatformTier(); ok {
+		return tier
+	}
+	if def := defaultCatalogueRole("", role); def != nil {
+		return def.Tier
+	}
+	return ""
+}
+
+// --- Mock RoleRepository ---
+// Without FindRoleFn every kind has the default catalogue: ADMIN (tier ADMIN)
+// and USER (tier MEMBER), granting nothing.
+type mockRoleRepo struct {
+	FindRolesFn         func(ctx context.Context, kind domain.TenantKind) ([]domain.RoleDefinition, error)
+	FindRoleFn          func(ctx context.Context, kind domain.TenantKind, name domain.Role) (*domain.RoleDefinition, error)
+	CreateRoleFn        func(ctx context.Context, role *domain.RoleDefinition) (*domain.RoleDefinition, error)
+	UpdateRoleFn        func(ctx context.Context, kind domain.TenantKind, name domain.Role, patch domain.RolePatch) (*domain.RoleDefinition, error)
+	DeleteRoleFn        func(ctx context.Context, kind domain.TenantKind, name domain.Role) error
+	RoleHeldFn          func(ctx context.Context, kind domain.TenantKind, name domain.Role) (bool, error)
+	RolesHeldInTenantFn func(ctx context.Context, tenantID string) ([]domain.Role, error)
+	FindPermissionsFn   func(ctx context.Context, kind domain.TenantKind) ([]domain.Permission, error)
+	FindPermissionFn    func(ctx context.Context, kind domain.TenantKind, key string) (*domain.Permission, error)
+	CreatePermissionFn  func(ctx context.Context, permission *domain.Permission) (*domain.Permission, error)
+	UpdatePermissionFn  func(ctx context.Context, kind domain.TenantKind, key string, patch domain.PermissionPatch) (*domain.Permission, error)
+	DeletePermissionFn  func(ctx context.Context, kind domain.TenantKind, key string) error
+	PermissionGrantedFn func(ctx context.Context, kind domain.TenantKind, key string) (bool, error)
+}
+
+func defaultCatalogueRole(kind domain.TenantKind, name domain.Role) *domain.RoleDefinition {
+	switch name {
+	case domain.RoleAdmin:
+		return &domain.RoleDefinition{Kind: kind, Name: name, Tier: domain.TierAdmin, Permissions: []string{}}
+	case domain.RoleUser:
+		return &domain.RoleDefinition{Kind: kind, Name: name, Tier: domain.TierMember, Permissions: []string{}}
+	}
+	return nil
+}
+
+func (m *mockRoleRepo) FindRoles(ctx context.Context, kind domain.TenantKind) ([]domain.RoleDefinition, error) {
+	if m.FindRolesFn == nil {
+		return []domain.RoleDefinition{}, nil
+	}
+	return m.FindRolesFn(ctx, kind)
+}
+func (m *mockRoleRepo) FindRole(ctx context.Context, kind domain.TenantKind, name domain.Role) (*domain.RoleDefinition, error) {
+	if m.FindRoleFn == nil {
+		return defaultCatalogueRole(kind, name), nil
+	}
+	return m.FindRoleFn(ctx, kind, name)
+}
+func (m *mockRoleRepo) CreateRole(ctx context.Context, role *domain.RoleDefinition) (*domain.RoleDefinition, error) {
+	if m.CreateRoleFn == nil {
+		return role, nil
+	}
+	return m.CreateRoleFn(ctx, role)
+}
+func (m *mockRoleRepo) UpdateRole(ctx context.Context, kind domain.TenantKind, name domain.Role, patch domain.RolePatch) (*domain.RoleDefinition, error) {
+	if m.UpdateRoleFn == nil {
+		return m.FindRole(ctx, kind, name)
+	}
+	return m.UpdateRoleFn(ctx, kind, name, patch)
+}
+func (m *mockRoleRepo) DeleteRole(ctx context.Context, kind domain.TenantKind, name domain.Role) error {
+	if m.DeleteRoleFn == nil {
+		return nil
+	}
+	return m.DeleteRoleFn(ctx, kind, name)
+}
+func (m *mockRoleRepo) RoleHeld(ctx context.Context, kind domain.TenantKind, name domain.Role) (bool, error) {
+	if m.RoleHeldFn == nil {
+		return false, nil
+	}
+	return m.RoleHeldFn(ctx, kind, name)
+}
+func (m *mockRoleRepo) RolesHeldInTenant(ctx context.Context, tenantID string) ([]domain.Role, error) {
+	if m.RolesHeldInTenantFn == nil {
+		return nil, nil
+	}
+	return m.RolesHeldInTenantFn(ctx, tenantID)
+}
+func (m *mockRoleRepo) FindPermissions(ctx context.Context, kind domain.TenantKind) ([]domain.Permission, error) {
+	if m.FindPermissionsFn == nil {
+		return []domain.Permission{}, nil
+	}
+	return m.FindPermissionsFn(ctx, kind)
+}
+func (m *mockRoleRepo) FindPermission(ctx context.Context, kind domain.TenantKind, key string) (*domain.Permission, error) {
+	if m.FindPermissionFn == nil {
+		return nil, nil
+	}
+	return m.FindPermissionFn(ctx, kind, key)
+}
+func (m *mockRoleRepo) CreatePermission(ctx context.Context, permission *domain.Permission) (*domain.Permission, error) {
+	if m.CreatePermissionFn == nil {
+		return permission, nil
+	}
+	return m.CreatePermissionFn(ctx, permission)
+}
+func (m *mockRoleRepo) UpdatePermission(ctx context.Context, kind domain.TenantKind, key string, patch domain.PermissionPatch) (*domain.Permission, error) {
+	if m.UpdatePermissionFn == nil {
+		return m.FindPermission(ctx, kind, key)
+	}
+	return m.UpdatePermissionFn(ctx, kind, key, patch)
+}
+func (m *mockRoleRepo) DeletePermission(ctx context.Context, kind domain.TenantKind, key string) error {
+	if m.DeletePermissionFn == nil {
+		return nil
+	}
+	return m.DeletePermissionFn(ctx, kind, key)
+}
+func (m *mockRoleRepo) PermissionGranted(ctx context.Context, kind domain.TenantKind, key string) (bool, error) {
+	if m.PermissionGrantedFn == nil {
+		return false, nil
+	}
+	return m.PermissionGrantedFn(ctx, kind, key)
+}
+
 // --- Mock UserRepository ---
 // Fn fields a test does not set fall back to a harmless default.
 type mockUserRepo struct {
@@ -131,6 +251,9 @@ func (m *mockTenantRepo) FindByID(ctx context.Context, id string) (*domain.Tenan
 	return m.FindByIDFn(ctx, id)
 }
 func (m *mockTenantRepo) FindAnyByID(ctx context.Context, id string) (*domain.Tenant, error) {
+	if m.FindAnyByIDFn == nil {
+		return nil, nil
+	}
 	return m.FindAnyByIDFn(ctx, id)
 }
 func (m *mockTenantRepo) HasMembers(ctx context.Context, id string) (bool, error) {
@@ -252,7 +375,7 @@ type mockUserService struct {
 	RestoreFn        func(ctx context.Context, id string, caller *domain.Actor) (*domain.User, error)
 	UsernameTakenFn  func(ctx context.Context, username string) (bool, error)
 	RecordLoginFn    func(ctx context.Context, id string) error
-	AccessReportFn   func(ctx context.Context, caller *domain.Actor) ([]domain.User, error)
+	AccessReportFn   func(ctx context.Context, caller *domain.Actor) ([]ports.AccessEntry, error)
 }
 
 func (m *mockUserService) RecordLogin(ctx context.Context, id string) error {
@@ -261,7 +384,7 @@ func (m *mockUserService) RecordLogin(ctx context.Context, id string) error {
 	}
 	return m.RecordLoginFn(ctx, id)
 }
-func (m *mockUserService) AccessReport(ctx context.Context, caller *domain.Actor) ([]domain.User, error) {
+func (m *mockUserService) AccessReport(ctx context.Context, caller *domain.Actor) ([]ports.AccessEntry, error) {
 	return m.AccessReportFn(ctx, caller)
 }
 

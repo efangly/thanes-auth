@@ -22,6 +22,7 @@ const (
 
 type authService struct {
 	userService ports.UserService
+	roles       ports.RoleRepository
 	cache       ports.CachePort
 	sessions    ports.SessionStore
 	upload      ports.FileUploadPort
@@ -32,6 +33,7 @@ type authService struct {
 
 func NewAuthService(
 	userService ports.UserService,
+	roles ports.RoleRepository,
 	cache ports.CachePort,
 	sessions ports.SessionStore,
 	upload ports.FileUploadPort,
@@ -41,6 +43,7 @@ func NewAuthService(
 ) ports.AuthService {
 	return &authService{
 		userService: userService,
+		roles:       roles,
 		cache:       cache,
 		sessions:    sessions,
 		upload:      upload,
@@ -153,7 +156,10 @@ func truncate(s string, n int) string {
 }
 
 func (s *authService) Login(ctx context.Context, user *domain.User) (*ports.LoginResult, error) {
-	actor := actorFor(user)
+	actor, err := s.actorFor(ctx, user)
+	if err != nil {
+		return nil, err
+	}
 	pair, err := s.tokens.IssuePair(actor)
 	if err != nil {
 		return nil, err
@@ -173,6 +179,9 @@ func (s *authService) Login(ctx context.Context, user *domain.User) (*ports.Logi
 		TenantID:      actor.TenantID,
 		DepartmentIDs: actor.DepartmentIDs,
 		Role:          user.Role,
+		Tier:          actor.Tier,
+		TenantKind:    actor.TenantKind,
+		Permissions:   actor.Permissions,
 		Pic:           user.Pic,
 	}, nil
 }
@@ -201,7 +210,10 @@ func (s *authService) RefreshTokens(ctx context.Context, token string) (*ports.R
 		return nil, errors.New("user is no longer active")
 	}
 
-	actor := actorFor(user)
+	actor, err := s.actorFor(ctx, user)
+	if err != nil {
+		return nil, err
+	}
 	pair, err := s.tokens.IssuePair(actor)
 	if err != nil {
 		return nil, err
@@ -225,7 +237,7 @@ func (s *authService) ResetPassword(ctx context.Context, username string, passwo
 	}
 
 	// Everyone but SUPER must prove the current password.
-	if caller.Role != domain.RoleSuper {
+	if caller.Tier != domain.TierSuper {
 		if oldPassword == "" {
 			return "", errors.New("old password is required")
 		}
@@ -298,16 +310,32 @@ func (s *authService) checkNotRevoked(ctx context.Context, claims *ports.Refresh
 	return nil
 }
 
-// actorFor is the identity a user's tokens carry.
-func actorFor(user *domain.User) domain.Actor {
+// actorFor is the identity a user's tokens carry, with the tier and
+// permissions its role has for the kind of its tenant. A role the catalogue no
+// longer knows signs in as GUEST with no permissions: it fails closed.
+func (s *authService) actorFor(ctx context.Context, user *domain.User) (domain.Actor, error) {
 	actor := domain.Actor{
 		ID:            user.ID,
 		Role:          user.Role,
+		Tier:          domain.TierGuest,
 		TenantID:      user.TenantID,
 		DepartmentIDs: user.LinkedDepartmentIDs(),
+		Permissions:   []string{},
 	}
 	if user.Display != nil {
 		actor.Name = *user.Display
 	}
-	return actor
+	if user.Tenant != nil {
+		actor.TenantKind = user.Tenant.Kind
+	}
+	def, err := resolveRole(ctx, s.roles, actor.TenantKind, user.Role)
+	if err != nil {
+		return domain.Actor{}, err
+	}
+	if def == nil {
+		logger.Warn("User holds a role its tenant kind does not define", "userId", user.ID, "role", user.Role, "kind", actor.TenantKind)
+		return actor, nil
+	}
+	actor.Tier, actor.Permissions = def.Tier, def.Permissions
+	return actor, nil
 }

@@ -16,7 +16,18 @@ type LoginResult struct {
 	TenantID      string
 	DepartmentIDs []string
 	Role          domain.Role
+	Tier          domain.Tier
+	TenantKind    domain.TenantKind
+	Permissions   []string
 	Pic           *string
+}
+
+// AccessEntry is one line of an access review: a user and what its role
+// gives it.
+type AccessEntry struct {
+	User        domain.User
+	Tier        domain.Tier
+	Permissions []string
 }
 
 // RefreshResult represents the result of a token refresh. Its JSON shape is
@@ -56,9 +67,9 @@ type UserService interface {
 	UsernameTaken(ctx context.Context, username string) (bool, error)
 	// RecordLogin stamps the user's last successful login.
 	RecordLogin(ctx context.Context, id string) error
-	// AccessReport lists who has access to what (role, status, tenant, departments, last
-	// login) for the caller's scope, for periodic access review. The call is audited.
-	AccessReport(ctx context.Context, caller *domain.Actor) ([]domain.User, error)
+	// AccessReport lists who has access to what (role, tier, permissions, status, tenant,
+	// departments, last login) for the caller's scope, for periodic access review. The call is audited.
+	AccessReport(ctx context.Context, caller *domain.Actor) ([]AccessEntry, error)
 }
 
 // TenantService defines the driving port for tenant use cases
@@ -81,6 +92,24 @@ type DepartmentService interface {
 	Update(ctx context.Context, id string, patch domain.DepartmentPatch, caller *domain.Actor) (*domain.Department, error)
 	Remove(ctx context.Context, id string, caller *domain.Actor) (*domain.Department, error)
 	Restore(ctx context.Context, id string, caller *domain.Actor) (*domain.Department, error)
+}
+
+// RoleService defines the driving port for the role catalogue. Only SUPER may
+// change it; SUPER and SERVICE may read every kind, a tenant-scoped admin only
+// its own tenant's kind, and anyone else nothing.
+type RoleService interface {
+	// FindRoles lists the roles of kind; an empty kind means every kind the
+	// caller may read.
+	FindRoles(ctx context.Context, kind domain.TenantKind, caller *domain.Actor) ([]domain.RoleDefinition, error)
+	FindRole(ctx context.Context, kind domain.TenantKind, name domain.Role, caller *domain.Actor) (*domain.RoleDefinition, error)
+	CreateRole(ctx context.Context, role *domain.RoleDefinition, caller *domain.Actor) (*domain.RoleDefinition, error)
+	UpdateRole(ctx context.Context, kind domain.TenantKind, name domain.Role, patch domain.RolePatch, caller *domain.Actor) (*domain.RoleDefinition, error)
+	RemoveRole(ctx context.Context, kind domain.TenantKind, name domain.Role, caller *domain.Actor) error
+
+	FindPermissions(ctx context.Context, kind domain.TenantKind, caller *domain.Actor) ([]domain.Permission, error)
+	CreatePermission(ctx context.Context, permission *domain.Permission, caller *domain.Actor) (*domain.Permission, error)
+	UpdatePermission(ctx context.Context, kind domain.TenantKind, key string, patch domain.PermissionPatch, caller *domain.Actor) (*domain.Permission, error)
+	RemovePermission(ctx context.Context, kind domain.TenantKind, key string, caller *domain.Actor) error
 }
 
 // AuditService defines the driving port for audit-log use cases.

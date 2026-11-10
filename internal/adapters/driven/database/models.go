@@ -97,6 +97,54 @@ type userDepartmentModel struct {
 
 func (userDepartmentModel) TableName() string { return "user_departments" }
 
+// roleModel, permissionModel and rolePermissionModel are the role catalogue
+// (ADR 0006).
+type roleModel struct {
+	Kind        string `gorm:"column:kind;primaryKey"`
+	Name        string `gorm:"column:name;primaryKey"`
+	Tier        string `gorm:"column:tier"`
+	Description *string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+func (roleModel) TableName() string { return "roles" }
+
+type permissionModel struct {
+	Kind        string `gorm:"column:kind;primaryKey"`
+	Key         string `gorm:"column:key;primaryKey"`
+	Description *string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+func (permissionModel) TableName() string { return "permissions" }
+
+type rolePermissionModel struct {
+	Kind          string `gorm:"column:kind;primaryKey"`
+	RoleName      string `gorm:"column:role_name;primaryKey"`
+	PermissionKey string `gorm:"column:permission_key;primaryKey"`
+}
+
+func (rolePermissionModel) TableName() string { return "role_permissions" }
+
+func (m roleModel) toDomain(permissions []string) domain.RoleDefinition {
+	if permissions == nil {
+		permissions = []string{}
+	}
+	return domain.RoleDefinition{
+		Kind: domain.TenantKind(m.Kind), Name: domain.Role(m.Name), Tier: domain.Tier(m.Tier),
+		Description: m.Description, Permissions: permissions, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
+	}
+}
+
+func (m permissionModel) toDomain() domain.Permission {
+	return domain.Permission{
+		Kind: domain.TenantKind(m.Kind), Key: m.Key, Description: m.Description,
+		CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt,
+	}
+}
+
 type auditLogModel struct {
 	ID        string `gorm:"column:id;primaryKey"`
 	Entity    string

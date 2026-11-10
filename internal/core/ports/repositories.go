@@ -87,6 +87,36 @@ type TenantRepository interface {
 	Restore(ctx context.Context, id string) (*domain.Tenant, error)
 }
 
+// RoleRepository stores the role catalogue (ADR 0006). Finds return nil, nil
+// when nothing matches. The catalogue has no soft delete: a role or permission
+// can only be removed once nothing uses it.
+type RoleRepository interface {
+	// FindRoles lists the roles of kind, or of every kind when kind is empty,
+	// with their permissions.
+	FindRoles(ctx context.Context, kind domain.TenantKind) ([]domain.RoleDefinition, error)
+	FindRole(ctx context.Context, kind domain.TenantKind, name domain.Role) (*domain.RoleDefinition, error)
+	// CreateRole stores the role and the permissions it grants.
+	CreateRole(ctx context.Context, role *domain.RoleDefinition) (*domain.RoleDefinition, error)
+	UpdateRole(ctx context.Context, kind domain.TenantKind, name domain.Role, patch domain.RolePatch) (*domain.RoleDefinition, error)
+	DeleteRole(ctx context.Context, kind domain.TenantKind, name domain.Role) error
+	// RoleHeld reports whether any user of a tenant of kind holds the role,
+	// counting soft-deleted users and tenants: a restore must find it again.
+	RoleHeld(ctx context.Context, kind domain.TenantKind, name domain.Role) (bool, error)
+	// RolesHeldInTenant lists the distinct roles the tenant's users hold,
+	// counting soft-deleted users.
+	RolesHeldInTenant(ctx context.Context, tenantID string) ([]domain.Role, error)
+
+	// FindPermissions lists the permissions of kind, or of every kind when
+	// kind is empty.
+	FindPermissions(ctx context.Context, kind domain.TenantKind) ([]domain.Permission, error)
+	FindPermission(ctx context.Context, kind domain.TenantKind, key string) (*domain.Permission, error)
+	CreatePermission(ctx context.Context, permission *domain.Permission) (*domain.Permission, error)
+	UpdatePermission(ctx context.Context, kind domain.TenantKind, key string, patch domain.PermissionPatch) (*domain.Permission, error)
+	DeletePermission(ctx context.Context, kind domain.TenantKind, key string) error
+	// PermissionGranted reports whether any role still grants the permission.
+	PermissionGranted(ctx context.Context, kind domain.TenantKind, key string) (bool, error)
+}
+
 // AuditFilter narrows an audit log query. Zero-value fields are not applied.
 type AuditFilter struct {
 	Entity   string

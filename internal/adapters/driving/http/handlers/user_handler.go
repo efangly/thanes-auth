@@ -44,11 +44,11 @@ func (h *UserHandler) AccessReport(c fiber.Ctx) error {
 	if caller == nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(dto.FailResponse("Unauthorized"))
 	}
-	users, err := h.userService.AccessReport(c.Context(), caller)
+	entries, err := h.userService.AccessReport(c.Context(), caller)
 	if err != nil {
 		return serviceError(c, fiber.StatusBadRequest, err)
 	}
-	return c.Status(fiber.StatusOK).JSON(dto.SuccessResponse(dto.FromUsers(users)))
+	return c.Status(fiber.StatusOK).JSON(dto.SuccessResponse(dto.FromAccessEntries(entries)))
 }
 
 func (h *UserHandler) FindAll(c fiber.Ctx) error {

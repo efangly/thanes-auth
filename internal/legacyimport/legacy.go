@@ -19,6 +19,9 @@ var validKinds = map[string]bool{"HOSPITAL": true, "LAB": true, "FACTORY": true,
 
 var validRoles = map[string]bool{"SUPER": true, "SERVICE": true, "ADMIN": true, "LEGACY_ADMIN": true, "USER": true, "LEGACY_USER": true, "GUEST": true}
 
+// mergedRoles are the old roles folded into a default catalogue role (ADR 0006).
+var mergedRoles = map[string]string{"LEGACY_ADMIN": "ADMIN", "LEGACY_USER": "USER"}
+
 type tenant struct {
 	ID, Name, Kind                                       string
 	Legacy, Hidden                                       bool
@@ -183,6 +186,9 @@ func readLegacy(ctx context.Context, old *sql.DB) (*snapshot, []string, error) {
 		u.TenantID = tid
 		if !validRoles[u.Role] {
 			problems = append(problems, fmt.Sprintf("user %s (%s) has unknown role %q", u.ID, u.Username, u.Role))
+		}
+		if merged, ok := mergedRoles[u.Role]; ok {
+			u.Role = merged
 		}
 	}
 	sort.Strings(problems)

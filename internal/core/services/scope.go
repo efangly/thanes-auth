@@ -5,14 +5,14 @@ import (
 )
 
 // canAdminTenant reports whether caller may read or change the users and
-// settings of tenantID. SUPER and SERVICE act system-wide; ADMIN and
-// LEGACY_ADMIN only within their own tenant. Everyone else may only act on
+// settings of tenantID. SUPER and SERVICE act system-wide; the ADMIN tier only
+// within its own tenant. Everyone else may only act on
 // their own record, which callers check before reaching here.
 func canAdminTenant(caller *domain.Actor, tenantID string) bool {
-	switch caller.Role {
-	case domain.RoleSuper, domain.RoleService:
+	switch caller.Tier {
+	case domain.TierSuper, domain.TierService:
 		return true
-	case domain.RoleAdmin, domain.RoleLegacyAdmin:
+	case domain.TierAdmin:
 		// An admin token without a tenant must not match tenant-less records.
 		return caller.TenantID != "" && tenantID == caller.TenantID
 	}
@@ -22,14 +22,14 @@ func canAdminTenant(caller *domain.Actor, tenantID string) bool {
 // canSeeTenant mirrors buildTenantFilter for a single tenant, so a lookup by
 // id never reveals a tenant the caller's listing would hide.
 func canSeeTenant(caller *domain.Actor, tenant *domain.Tenant) bool {
-	switch caller.Role {
-	case domain.RoleSuper:
+	switch caller.Tier {
+	case domain.TierSuper:
 		return true
-	case domain.RoleService:
+	case domain.TierService:
 		return !tenant.Hidden
-	case domain.RoleAdmin, domain.RoleLegacyAdmin:
+	case domain.TierAdmin:
 		return caller.TenantID != "" && tenant.ID == caller.TenantID && !tenant.Hidden
-	case domain.RoleUser, domain.RoleLegacyUser, domain.RoleGuest:
+	case domain.TierMember, domain.TierGuest:
 		return caller.TenantID != "" && tenant.ID == caller.TenantID
 	}
 	return false
@@ -39,14 +39,14 @@ func canSeeTenant(caller *domain.Actor, tenant *domain.Tenant) bool {
 // department.Tenant must be loaded for the hidden-tenant rule to apply.
 func canSeeDepartment(caller *domain.Actor, department *domain.Department) bool {
 	hidden := department.Tenant != nil && department.Tenant.Hidden
-	switch caller.Role {
-	case domain.RoleSuper:
+	switch caller.Tier {
+	case domain.TierSuper:
 		return true
-	case domain.RoleService:
+	case domain.TierService:
 		return !hidden
-	case domain.RoleAdmin, domain.RoleLegacyAdmin:
+	case domain.TierAdmin:
 		return caller.TenantID != "" && department.TenantID == caller.TenantID && !hidden
-	case domain.RoleUser, domain.RoleLegacyUser, domain.RoleGuest:
+	case domain.TierMember, domain.TierGuest:
 		return caller.TenantID != "" && department.TenantID == caller.TenantID && caller.InDepartment(department.ID)
 	}
 	return false

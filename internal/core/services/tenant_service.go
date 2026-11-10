@@ -14,6 +14,7 @@ import (
 
 type tenantService struct {
 	repo      ports.TenantRepository
+	roles     ports.RoleRepository
 	cache     ports.CachePort
 	upload    ports.FileUploadPort
 	messaging ports.MessagingPort
@@ -23,6 +24,7 @@ type tenantService struct {
 // NewTenantService creates a new tenant service
 func NewTenantService(
 	repo ports.TenantRepository,
+	roles ports.RoleRepository,
 	cache ports.CachePort,
 	upload ports.FileUploadPort,
 	messaging ports.MessagingPort,
@@ -30,6 +32,7 @@ func NewTenantService(
 ) ports.TenantService {
 	return &tenantService{
 		repo:      repo,
+		roles:     roles,
 		cache:     cache,
 		upload:    upload,
 		messaging: messaging,
@@ -123,8 +126,10 @@ func (s *tenantService) Update(ctx context.Context, id string, patch domain.Tena
 	if err != nil {
 		return nil, err
 	}
-	if patch.Kind != nil && !patch.Kind.IsValid() {
-		return nil, fmt.Errorf("invalid tenant kind: %s", *patch.Kind)
+	if patch.Kind != nil && *patch.Kind != existing.Kind {
+		if err := s.checkKindChange(ctx, id, existing.Kind, *patch.Kind); err != nil {
+			return nil, err
+		}
 	}
 	if patch.Hidden != nil && *patch.Hidden != existing.Hidden {
 		if err := checkHiddenChange(caller, *patch.Hidden); err != nil {
@@ -269,21 +274,52 @@ func (s *tenantService) invalidate(ctx context.Context) {
 
 // checkHiddenChange allows only SUPER to make a tenant hidden or visible.
 func checkHiddenChange(caller *domain.Actor, hidden bool) error {
-	if hidden && (caller == nil || caller.Role != domain.RoleSuper) {
+	if hidden && (caller == nil || caller.Tier != domain.TierSuper) {
 		return errors.New("only SUPER can create a hidden tenant")
 	}
 	return nil
 }
 
-// buildTenantFilter is the tenant listing each role may see, and its cache
+// checkKindChange allows a tenant to change kind only when every role its users
+// hold — soft-deleted users included, so a restore still works — exists in the
+// new kind with the same tier. A role that would mean more, or nothing, there
+// must be changed on those users first (ADR 0006).
+func (s *tenantService) checkKindChange(ctx context.Context, id string, from, to domain.TenantKind) error {
+	if !to.IsValid() {
+		return fmt.Errorf("invalid tenant kind: %s", to)
+	}
+	held, err := s.roles.RolesHeldInTenant(ctx, id)
+	if err != nil {
+		return err
+	}
+	for _, role := range held {
+		if role.IsPlatform() {
+			continue
+		}
+		before, err := s.roles.FindRole(ctx, from, role)
+		if err != nil {
+			return err
+		}
+		after, err := s.roles.FindRole(ctx, to, role)
+		if err != nil {
+			return err
+		}
+		if after == nil || (before != nil && before.Tier != after.Tier) {
+			return fmt.Errorf("users of this tenant hold role %s, which tenant kind %s does not have with the same tier", role, to)
+		}
+	}
+	return nil
+}
+
+// buildTenantFilter is the tenant listing each tier may see, and its cache
 // key. ok is false when the caller's scope is empty.
 func buildTenantFilter(caller *domain.Actor) (filter ports.TenantFilter, key string, ok bool) {
-	switch caller.Role {
-	case domain.RoleSuper:
+	switch caller.Tier {
+	case domain.TierSuper:
 		return ports.TenantFilter{}, "tenant", true
-	case domain.RoleService:
+	case domain.TierService:
 		return ports.TenantFilter{ExcludeHidden: true}, "tenant:service", true
-	case domain.RoleAdmin, domain.RoleLegacyAdmin:
+	case domain.TierAdmin:
 		if caller.TenantID == "" {
 			return filter, "", false
 		}

@@ -21,7 +21,7 @@ func TestEmbeddedMigrationsParse(t *testing.T) {
 	require.NoError(t, err)
 
 	sources := provider.ListSources()
-	require.Len(t, sources, 2)
+	require.Len(t, sources, 3)
 	for i, s := range sources {
 		require.EqualValues(t, i+1, s.Version)
 	}

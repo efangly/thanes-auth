@@ -51,13 +51,15 @@ func main() {
 	tenantRepo := database.NewTenantRepository(db)
 	departmentRepo := database.NewDepartmentRepository(db)
 	auditRepo := database.NewAuditRepository(db)
+	roleRepo := database.NewRoleRepository(db)
 
 	// Initialize core services (use cases)
 	auditService := services.NewAuditService(auditRepo)
-	userService := services.NewUserService(userRepo, tenantRepo, departmentRepo, redisCache, fileUpload, hasher, auditService)
-	tenantService := services.NewTenantService(tenantRepo, redisCache, fileUpload, msgAdapter, auditService)
+	userService := services.NewUserService(userRepo, tenantRepo, departmentRepo, roleRepo, redisCache, fileUpload, hasher, auditService)
+	tenantService := services.NewTenantService(tenantRepo, roleRepo, redisCache, fileUpload, msgAdapter, auditService)
 	departmentService := services.NewDepartmentService(departmentRepo, tenantRepo, redisCache, msgAdapter, auditService)
-	authService := services.NewAuthService(userService, redisCache, sessions, fileUpload, tokens, hasher, auditService)
+	roleService := services.NewRoleService(roleRepo, auditService)
+	authService := services.NewAuthService(userService, roleRepo, redisCache, sessions, fileUpload, tokens, hasher, auditService)
 
 	// Initialize driving adapters (HTTP handlers)
 	authHandler := handlers.NewAuthHandler(authService)
@@ -65,6 +67,7 @@ func main() {
 	tenantHandler := handlers.NewTenantHandler(tenantService)
 	departmentHandler := handlers.NewDepartmentHandler(departmentService)
 	auditHandler := handlers.NewAuditHandler(auditService)
+	roleHandler := handlers.NewRoleHandler(roleService)
 	healthHandler := handlers.NewHealthHandler()
 	imageHandler := handlers.NewImageHandler(services.NewImageService(fileUpload))
 
@@ -88,7 +91,7 @@ func main() {
 	app.Use(cors.New())
 
 	// Setup routes
-	router := httpAdapter.NewRouter(app, cfg, tokens, authHandler, userHandler, tenantHandler, departmentHandler, auditHandler, healthHandler, imageHandler)
+	router := httpAdapter.NewRouter(app, cfg, tokens, authHandler, userHandler, tenantHandler, departmentHandler, auditHandler, roleHandler, healthHandler, imageHandler)
 	router.Setup()
 
 	// Graceful shutdown

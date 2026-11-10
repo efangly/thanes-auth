@@ -161,7 +161,7 @@ func TestAuthService_ResetPassword_InvalidatesEarlierSessionsAndAudits(t *testin
 		},
 	}
 	svc, _, _, _, _, sessions, audit := newTestAuthServiceAll(userSvc)
-	caller := &domain.Actor{ID: "U1", Role: domain.RoleUser}
+	caller := &domain.Actor{ID: "U1", Role: domain.RoleUser, Tier: tierFor(domain.RoleUser)}
 
 	_, err := svc.ResetPassword(context.Background(), "admin", "new-password-123", "old-password-123", caller)
 	require.NoError(t, err)

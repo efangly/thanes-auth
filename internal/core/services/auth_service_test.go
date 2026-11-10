@@ -28,7 +28,7 @@ func newTestAuthServiceAll(userSvc *mockUserService) (ports.AuthService, *mockCa
 	hasher := &fakeHasher{}
 	sessions := newFakeSessions()
 	audit := newRecordedAudit()
-	svc := NewAuthService(userSvc, cache, sessions, upload, tokens, hasher, audit)
+	svc := NewAuthService(userSvc, &mockRoleRepo{}, cache, sessions, upload, tokens, hasher, audit)
 	return svc, cache, upload, tokens, hasher, sessions, audit
 }
 
@@ -215,7 +215,7 @@ func TestAuthService_Login_Success(t *testing.T) {
 
 	// The tokens carry the user's identity, tenant and departments.
 	require.Len(t, tokens.issued, 1)
-	assert.Equal(t, domain.Actor{ID: "U1", Name: "Admin", Role: domain.RoleAdmin, TenantID: "T1", DepartmentIDs: []string{"D1", "D2"}}, tokens.issued[0])
+	assert.Equal(t, domain.Actor{ID: "U1", Name: "Admin", Role: domain.RoleAdmin, Tier: tierFor(domain.RoleAdmin), TenantID: "T1", DepartmentIDs: []string{"D1", "D2"}, Permissions: []string{}}, tokens.issued[0])
 }
 
 // --- RefreshTokens ---
@@ -262,7 +262,7 @@ func TestAuthService_ResetPassword_SuperRole(t *testing.T) {
 	}
 	svc, _, _ := newTestAuthService(userSvc)
 
-	msg, err := svc.ResetPassword(context.Background(), "user1", "newpass", "", &domain.Actor{Role: "SUPER"})
+	msg, err := svc.ResetPassword(context.Background(), "user1", "newpass", "", &domain.Actor{Role: "SUPER", Tier: tierFor("SUPER")})
 	require.NoError(t, err)
 	assert.Equal(t, "Password reset successfully", msg)
 	assert.True(t, updated)
@@ -277,7 +277,7 @@ func TestAuthService_ResetPassword_NonSuperRequiresOldPassword(t *testing.T) {
 	}
 	svc, _, _ := newTestAuthService(userSvc)
 
-	_, err := svc.ResetPassword(context.Background(), "user1", "newpass", "", &domain.Actor{Role: "ADMIN"})
+	_, err := svc.ResetPassword(context.Background(), "user1", "newpass", "", &domain.Actor{Role: "ADMIN", Tier: tierFor("ADMIN")})
 	assert.EqualError(t, err, "old password is required")
 }
 
@@ -290,7 +290,7 @@ func TestAuthService_ResetPassword_WrongOldPassword(t *testing.T) {
 	}
 	svc, _, _ := newTestAuthService(userSvc)
 
-	_, err := svc.ResetPassword(context.Background(), "user1", "newpass", "wrongold", &domain.Actor{Role: "ADMIN"})
+	_, err := svc.ResetPassword(context.Background(), "user1", "newpass", "wrongold", &domain.Actor{Role: "ADMIN", Tier: tierFor("ADMIN")})
 	assert.EqualError(t, err, "old password is incorrect")
 }
 
@@ -302,7 +302,7 @@ func TestAuthService_ResetPassword_UserNotFound(t *testing.T) {
 	}
 	svc, _, _ := newTestAuthService(userSvc)
 
-	_, err := svc.ResetPassword(context.Background(), "nobody", "newpass", "", &domain.Actor{Role: "SUPER"})
+	_, err := svc.ResetPassword(context.Background(), "nobody", "newpass", "", &domain.Actor{Role: "SUPER", Tier: tierFor("SUPER")})
 	assert.EqualError(t, err, "user not found")
 }
 
@@ -360,7 +360,7 @@ func TestAuthService_ResetPassword_RejectsOtherUsersAccount(t *testing.T) {
 	svc, _, _ := newTestAuthService(userSvc)
 
 	_, err := svc.ResetPassword(context.Background(), "victim", "newpass", "oldpass",
-		&domain.Actor{ID: "ATTACKER", Role: "GUEST"})
+		&domain.Actor{ID: "ATTACKER", Role: "GUEST", Tier: tierFor("GUEST")})
 	assert.EqualError(t, err, "you can only reset your own password")
 }
 
@@ -377,7 +377,7 @@ func TestAuthService_ResetPassword_OwnAccountAllowed(t *testing.T) {
 	svc, _, _ := newTestAuthService(userSvc)
 
 	msg, err := svc.ResetPassword(context.Background(), "user1", "newpass", "oldpass",
-		&domain.Actor{ID: "U1", Role: "GUEST"})
+		&domain.Actor{ID: "U1", Role: "GUEST", Tier: tierFor("GUEST")})
 	require.NoError(t, err)
 	assert.Equal(t, "Password reset successfully", msg)
 }

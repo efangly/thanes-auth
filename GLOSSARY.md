@@ -13,8 +13,8 @@ _Avoid_: Hospital (as the general term), organisation, site, customer
 
 **Tenant kind**:
 What sort of organisation a tenant is: hospital, laboratory, factory, clinic, pharmacy or
-other. It chooses the default labels shown to that tenant's users and lets the frontend
-adapt, but it never changes what anyone is allowed to do.
+other. It chooses the default labels shown to that tenant's users and which roles and
+permissions its users can be given, but it never changes what a tier allows.
 _Avoid_: Tenant type, category
 
 **Department**:
@@ -51,26 +51,50 @@ The user performing the current request, as identified by their access token.
 _Avoid_: Principal, JWT payload, current user
 
 **Role**:
-The single permission level a user holds: SUPER, SERVICE, ADMIN, LEGACY_ADMIN, USER,
-LEGACY_USER or GUEST.
-_Avoid_: Permission, group, privilege
+The single named job a user holds, such as ADMIN, USER or a laboratory's "Lab technician".
+It is either a platform role or a role defined for one tenant kind, and it always has
+exactly one tier.
+_Avoid_: Group, position, job title
+
+**Platform role**:
+A role that exists the same way for every tenant kind: SUPER, SERVICE and GUEST.
+_Avoid_: System role, built-in role
+
+**Tier**:
+The fixed level of authority a role carries, and the only thing this service looks at when
+deciding what someone may do here: SUPER, SERVICE, ADMIN, MEMBER or GUEST. A role's tier
+never changes.
+_Avoid_: Level, rank, role (when the tier is meant)
+
+**Permission**:
+A named action in another SMtrack system, such as approving a lab result, that a role grants.
+Permissions are defined per tenant kind, granted only through roles, and checked by the
+system that owns the action, never by this service.
+_Avoid_: Right, privilege, scope, role
+
+**Role catalogue**:
+The roles and permissions defined for each tenant kind, and which permissions each role
+grants. Only SUPER may change it.
+_Avoid_: Role list, role config
 
 **Guest**:
-The role every self-registered user starts with; it can see little until an admin promotes it.
+The platform role every self-registered user starts with; it can see little until an admin
+promotes it.
 _Avoid_: Anonymous, visitor, pending user
 
 **Admin tier**:
-The roles allowed to act on users other than themselves: SUPER, SERVICE, ADMIN and LEGACY_ADMIN.
+The tiers allowed to act on users other than themselves: SUPER, SERVICE and ADMIN.
 _Avoid_: Admins (when SERVICE or SUPER are meant too), staff
 
 **Tenant-scoped admin**:
-An ADMIN or LEGACY_ADMIN: admin tier, but confined to their own tenant.
+A user whose role has the ADMIN tier: admin tier, but confined to their own tenant.
 _Avoid_: Local admin, hospital admin
 
 **Role ceiling**:
-The highest role an actor may give to a user, which is also the highest role of a user the
-actor may change or delete. SUPER may reach any role; SERVICE any but SUPER; a
-tenant-scoped admin only USER, LEGACY_USER and GUEST. Nobody may change their own role.
+The highest tier an actor may give to a user, which is also the highest tier of a user the
+actor may change or delete. SUPER may reach any tier; SERVICE any but SUPER; a tenant-scoped
+admin only MEMBER and GUEST roles of their own tenant's kind, whatever permissions those
+roles grant. Nobody may change their own role.
 _Avoid_: Role hierarchy, rank
 
 **Tenant scope**:
@@ -80,7 +104,7 @@ _Avoid_: Visibility, permissions, data scope
 
 **Department access**:
 Which departments of their tenant an actor can see. A tenant-scoped admin sees all of them;
-any other role sees only the departments they are linked to.
+any lower tier sees only the departments they are linked to.
 _Avoid_: Department permission, membership
 
 **Status**:

@@ -61,18 +61,18 @@ All routes are prefixed with `/auth`.
 | `POST` | `/auth/refresh` | Refresh access token (refresh JWT) | — |
 | `POST` | `/auth/logout` | Revoke the caller's refresh token (body: `token`) | Any authenticated |
 | `PATCH` | `/auth/reset/:username` | Reset password (signs the user's other sessions out) | Any authenticated |
-| `GET` | `/auth/report/access` | Access review: role, status, tenant, departments, last login | SUPER, SERVICE, ADMIN, LEGACY_ADMIN |
+| `GET` | `/auth/report/access` | Access review: role, tier, permissions, status, tenant, departments, last login | SUPER, SERVICE, ADMIN tier |
 
 ### User Management
 
 | Method | Path | Description | Roles |
 |--------|------|-------------|-------|
-| `POST` | `/auth/user` | Create user | SUPER, SERVICE, ADMIN, LEGACY_ADMIN |
-| `GET` | `/auth/user` | List all users | SUPER, SERVICE, ADMIN, LEGACY_ADMIN |
+| `POST` | `/auth/user` | Create user | SUPER, SERVICE, ADMIN tier |
+| `GET` | `/auth/user` | List all users | SUPER, SERVICE, ADMIN tier |
 | `GET` | `/auth/user/:id` | Get user by ID | Any authenticated |
 | `PUT` | `/auth/user/:id` | Update user (non-admins: own record only) | Any authenticated |
-| `DELETE` | `/auth/user/:id` | Soft delete user | SUPER, SERVICE, ADMIN, LEGACY_ADMIN |
-| `POST` | `/auth/user/:id/restore` | Restore user | SUPER, SERVICE, ADMIN, LEGACY_ADMIN |
+| `DELETE` | `/auth/user/:id` | Soft delete user | SUPER, SERVICE, ADMIN tier |
+| `POST` | `/auth/user/:id/restore` | Restore user | SUPER, SERVICE, ADMIN tier |
 
 ### Tenant Management
 
@@ -84,7 +84,7 @@ A tenant is a hospital, laboratory, factory, clinic, pharmacy or other organisat
 | `GET` | `/auth/tenant` | List visible tenants | Any authenticated |
 | `GET` | `/auth/tenant/:id` | Get tenant (with label profile and departments) | Any authenticated |
 | `PUT` | `/auth/tenant/:id` | Update tenant | SUPER, SERVICE |
-| `PUT` | `/auth/tenant/:id/labels` | Set the tenant's own names for "tenant" and "department" per language | SUPER, SERVICE, own tenant's ADMIN / LEGACY_ADMIN |
+| `PUT` | `/auth/tenant/:id/labels` | Set the tenant's own names for "tenant" and "department" per language | SUPER, SERVICE, own tenant's ADMIN tier |
 | `DELETE` | `/auth/tenant/:id` | Soft delete (only when it has no users or departments) | SUPER |
 | `POST` | `/auth/tenant/:id/restore` | Restore | SUPER |
 
@@ -99,6 +99,23 @@ A tenant is a hospital, laboratory, factory, clinic, pharmacy or other organisat
 | `DELETE` | `/auth/department/:id` | Soft delete | SUPER, SERVICE |
 | `POST` | `/auth/department/:id/restore` | Restore | SUPER, SERVICE |
 
+### Role Catalogue
+
+Roles and permissions per tenant kind (ADR 0006). Reading is scoped: SUPER and SERVICE see every
+kind, an ADMIN-tier user only its own tenant's kind.
+
+| Method | Path | Description | Tiers |
+|--------|------|-------------|-------|
+| `GET` | `/auth/role?kind=LAB` | List roles with tier and permissions | SUPER, SERVICE, ADMIN tier |
+| `GET` | `/auth/role/:kind/:name` | Get one role | SUPER, SERVICE, ADMIN tier |
+| `POST` | `/auth/role` | Create a role (`kind`, `name`, `tier`, `permissions`); the tier never changes | SUPER |
+| `PUT` | `/auth/role/:kind/:name` | Change description or permissions | SUPER |
+| `DELETE` | `/auth/role/:kind/:name` | Remove a role nobody holds (deleted users count) | SUPER |
+| `GET` | `/auth/permission?kind=LAB` | List permissions | SUPER, SERVICE, ADMIN tier |
+| `POST` | `/auth/permission` | Register a permission (`kind`, `key` such as `result:approve`) | SUPER |
+| `PUT` | `/auth/permission/:kind/:key` | Change its description | SUPER |
+| `DELETE` | `/auth/permission/:kind/:key` | Remove a permission no role grants | SUPER |
+
 ### Audit Log
 
 | Method | Path | Description | Roles |
@@ -107,23 +124,31 @@ A tenant is a hospital, laboratory, factory, clinic, pharmacy or other organisat
 
 ### Tenant scope
 
-A user belongs to one tenant and to any number of that tenant's departments. ADMIN and
-LEGACY_ADMIN are confined to their own tenant: user, tenant and department lookups by id, user
-updates and deletes, and the departments a user is placed in must all belong to it. Other roles
+A user belongs to one tenant and to any number of that tenant's departments. The ADMIN tier is
+confined to its own tenant: user, tenant and department lookups by id, user
+updates and deletes, and the departments a user is placed in must all belong to it. Lower tiers
 see only their own tenant and the departments they are linked to. Hidden tenants are visible to
 SUPER only. Anything outside reads as not found. SUPER and SERVICE act system-wide.
 
-## User Roles
+## Roles and tiers
 
-| Role | Description |
-|------|-------------|
-| `SUPER` | Full system access |
-| `SERVICE` | Service-level access (inter-service) |
-| `ADMIN` | Tenant admin |
-| `USER` | Standard user |
-| `LEGACY_ADMIN` | Legacy system admin |
-| `LEGACY_USER` | Legacy system user |
-| `GUEST` | Read-only guest |
+Every role has one **tier**, and this service decides everything by tier (ADR 0006). SUPER,
+SERVICE and GUEST are platform roles, the same for every tenant kind. Every other role is defined
+for one tenant kind in the role catalogue; each kind starts with `ADMIN` and `USER`. A role may
+grant **permissions** registered for its kind; other systems check those, this service only puts
+them in the token.
+
+| Tier | Holders | May |
+|------|---------|-----|
+| `SUPER` | platform role SUPER | Everything, including hidden tenants and the role catalogue |
+| `SERVICE` | platform role SERVICE | System-wide, except hidden tenants and assigning SUPER |
+| `ADMIN` | kind roles such as `ADMIN` | Own tenant; assign MEMBER and GUEST roles of its kind |
+| `MEMBER` | kind roles such as `USER` | Own record, own tenant, linked departments |
+| `GUEST` | platform role GUEST, or a kind role | As MEMBER; self-registered users start here |
+
+Access tokens carry `role`, `tier`, `tenantId`, `tenantKind`, `departmentIds` and `permissions`.
+A token without a valid `tier` is rejected, so a client refreshes. LEGACY_ADMIN and LEGACY_USER
+were merged into ADMIN and USER by migration 00003.
 
 ## Configuration
 
@@ -212,8 +237,8 @@ docker run -p 8080:8080 --env-file .env smtrack-auth-service
 
 The service deploys to the `smtrack` namespace with 2 replicas.
 
-The Kubernetes manifests live in the GitOps repository (at its root), not here.
-Pushing to `main` builds the image and rewrites the image tag there (`.github/workflows/main.yaml`).
+The Kubernetes manifests live in the GitOps repository (`efangly/thanes-auth`, directory `thanes-auth/`), not here.
+Argo CD syncs that directory. Pushing to `main` builds the image and rewrites the image tag there (`.github/workflows/main.yaml`).
 
 The tenant/department version runs beside the old one (ADR 0004). `deploy.yaml` is the old
 version; the new one is `deploy-v2.yaml`. Secrets (JWT secrets, `DATABASE_URL`, Redis
@@ -227,8 +252,8 @@ kubectl apply -f purge-cronjob.yaml   # weekly removal of expired soft-deleted r
 # import-legacy-job.yaml is a one-off, applied only during cutover (see the runbook)
 ```
 
-ConfigMaps still used for non-secret settings: `authentication-config` (MinIO endpoint and bucket, image base URL, trusted
-proxies), `redis-config`, `rabbitmq-config`. The security mapping is in
+Non-secret settings are in the `authentication-v2-config` ConfigMap (MinIO endpoint and bucket, image base URL, trusted
+proxies, Redis host); `RABBITMQ` comes from `rabbitmq-config` once enabled at cutover. The security mapping is in
 [`docs/security/iso27001-controls.md`](docs/security/iso27001-controls.md).
 
 ### Health Check

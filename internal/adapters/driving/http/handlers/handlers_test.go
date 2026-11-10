@@ -60,7 +60,7 @@ type mockUserService struct {
 	UpdateFn         func(ctx context.Context, id string, data domain.UserPatch, file *domain.File, caller *domain.Actor) (*domain.User, error)
 	RemoveFn         func(ctx context.Context, id string, caller *domain.Actor) (*domain.User, error)
 	RestoreFn        func(ctx context.Context, id string, caller *domain.Actor) (*domain.User, error)
-	AccessReportFn   func(ctx context.Context, caller *domain.Actor) ([]domain.User, error)
+	AccessReportFn   func(ctx context.Context, caller *domain.Actor) ([]ports.AccessEntry, error)
 }
 
 func (m *mockUserService) Create(ctx context.Context, user *domain.User, caller *domain.Actor) (*domain.User, error) {
@@ -89,7 +89,7 @@ func (m *mockUserService) Restore(ctx context.Context, id string, caller *domain
 }
 func (m *mockUserService) UsernameTaken(context.Context, string) (bool, error) { return false, nil }
 func (m *mockUserService) RecordLogin(context.Context, string) error           { return nil }
-func (m *mockUserService) AccessReport(ctx context.Context, caller *domain.Actor) ([]domain.User, error) {
+func (m *mockUserService) AccessReport(ctx context.Context, caller *domain.Actor) ([]ports.AccessEntry, error) {
 	return m.AccessReportFn(ctx, caller)
 }
 
@@ -195,6 +195,83 @@ func parseErrorResponse(t *testing.T, resp *http.Response) dto.ErrorResponse {
 }
 
 // injectCaller puts the authenticated actor in Locals, as JWTAuth does
+// tierFor is the tier the default catalogue gives a role, for test callers.
+func tierFor(role domain.Role) domain.Tier {
+	return map[domain.Role]domain.Tier{
+		domain.RoleSuper: domain.TierSuper, domain.RoleService: domain.TierService,
+		domain.RoleAdmin: domain.TierAdmin, domain.RoleUser: domain.TierMember, domain.RoleGuest: domain.TierGuest,
+	}[role]
+}
+
+// mockRoleService mocks ports.RoleService. Fn fields a test does not set
+// return empty results.
+type mockRoleService struct {
+	FindRolesFn        func(ctx context.Context, kind domain.TenantKind, caller *domain.Actor) ([]domain.RoleDefinition, error)
+	FindRoleFn         func(ctx context.Context, kind domain.TenantKind, name domain.Role, caller *domain.Actor) (*domain.RoleDefinition, error)
+	CreateRoleFn       func(ctx context.Context, role *domain.RoleDefinition, caller *domain.Actor) (*domain.RoleDefinition, error)
+	UpdateRoleFn       func(ctx context.Context, kind domain.TenantKind, name domain.Role, patch domain.RolePatch, caller *domain.Actor) (*domain.RoleDefinition, error)
+	RemoveRoleFn       func(ctx context.Context, kind domain.TenantKind, name domain.Role, caller *domain.Actor) error
+	FindPermissionsFn  func(ctx context.Context, kind domain.TenantKind, caller *domain.Actor) ([]domain.Permission, error)
+	CreatePermissionFn func(ctx context.Context, permission *domain.Permission, caller *domain.Actor) (*domain.Permission, error)
+	UpdatePermissionFn func(ctx context.Context, kind domain.TenantKind, key string, patch domain.PermissionPatch, caller *domain.Actor) (*domain.Permission, error)
+	RemovePermissionFn func(ctx context.Context, kind domain.TenantKind, key string, caller *domain.Actor) error
+}
+
+func (m *mockRoleService) FindRoles(ctx context.Context, kind domain.TenantKind, caller *domain.Actor) ([]domain.RoleDefinition, error) {
+	if m.FindRolesFn == nil {
+		return []domain.RoleDefinition{}, nil
+	}
+	return m.FindRolesFn(ctx, kind, caller)
+}
+func (m *mockRoleService) FindRole(ctx context.Context, kind domain.TenantKind, name domain.Role, caller *domain.Actor) (*domain.RoleDefinition, error) {
+	if m.FindRoleFn == nil {
+		return nil, errors.New("role not found")
+	}
+	return m.FindRoleFn(ctx, kind, name, caller)
+}
+func (m *mockRoleService) CreateRole(ctx context.Context, role *domain.RoleDefinition, caller *domain.Actor) (*domain.RoleDefinition, error) {
+	if m.CreateRoleFn == nil {
+		return role, nil
+	}
+	return m.CreateRoleFn(ctx, role, caller)
+}
+func (m *mockRoleService) UpdateRole(ctx context.Context, kind domain.TenantKind, name domain.Role, patch domain.RolePatch, caller *domain.Actor) (*domain.RoleDefinition, error) {
+	if m.UpdateRoleFn == nil {
+		return &domain.RoleDefinition{Kind: kind, Name: name}, nil
+	}
+	return m.UpdateRoleFn(ctx, kind, name, patch, caller)
+}
+func (m *mockRoleService) RemoveRole(ctx context.Context, kind domain.TenantKind, name domain.Role, caller *domain.Actor) error {
+	if m.RemoveRoleFn == nil {
+		return nil
+	}
+	return m.RemoveRoleFn(ctx, kind, name, caller)
+}
+func (m *mockRoleService) FindPermissions(ctx context.Context, kind domain.TenantKind, caller *domain.Actor) ([]domain.Permission, error) {
+	if m.FindPermissionsFn == nil {
+		return []domain.Permission{}, nil
+	}
+	return m.FindPermissionsFn(ctx, kind, caller)
+}
+func (m *mockRoleService) CreatePermission(ctx context.Context, permission *domain.Permission, caller *domain.Actor) (*domain.Permission, error) {
+	if m.CreatePermissionFn == nil {
+		return permission, nil
+	}
+	return m.CreatePermissionFn(ctx, permission, caller)
+}
+func (m *mockRoleService) UpdatePermission(ctx context.Context, kind domain.TenantKind, key string, patch domain.PermissionPatch, caller *domain.Actor) (*domain.Permission, error) {
+	if m.UpdatePermissionFn == nil {
+		return &domain.Permission{Kind: kind, Key: key}, nil
+	}
+	return m.UpdatePermissionFn(ctx, kind, key, patch, caller)
+}
+func (m *mockRoleService) RemovePermission(ctx context.Context, kind domain.TenantKind, key string, caller *domain.Actor) error {
+	if m.RemovePermissionFn == nil {
+		return nil
+	}
+	return m.RemovePermissionFn(ctx, kind, key, caller)
+}
+
 func injectCaller(payload *domain.Actor) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		c.Locals("user", payload)
@@ -345,7 +422,7 @@ func TestAuthHandler_ResetPassword_Success(t *testing.T) {
 	}
 	app := fiber.New()
 	h := NewAuthHandler(svc)
-	app.Patch("/reset/:id", injectCaller(&domain.Actor{ID: "U1", Role: "SUPER"}), h.ResetPassword)
+	app.Patch("/reset/:id", injectCaller(&domain.Actor{ID: "U1", Role: "SUPER", Tier: tierFor("SUPER")}), h.ResetPassword)
 
 	req := httptest.NewRequest(http.MethodPatch, "/reset/U2",
 		jsonBody(t, map[string]string{"password": "newpw"}))
@@ -364,7 +441,7 @@ func TestAuthHandler_ResetPassword_Error(t *testing.T) {
 	}
 	app := fiber.New()
 	h := NewAuthHandler(svc)
-	app.Patch("/reset/:id", injectCaller(&domain.Actor{ID: "U1", Role: "USER"}), h.ResetPassword)
+	app.Patch("/reset/:id", injectCaller(&domain.Actor{ID: "U1", Role: "USER", Tier: tierFor("USER")}), h.ResetPassword)
 
 	req := httptest.NewRequest(http.MethodPatch, "/reset/U1",
 		jsonBody(t, map[string]string{"password": "new", "oldPassword": "wrong"}))
@@ -386,7 +463,7 @@ func TestUserHandler_Create_Success(t *testing.T) {
 	}
 	app := fiber.New()
 	h := NewUserHandler(svc)
-	app.Post("/users", injectCaller(&domain.Actor{ID: "U1", Role: "SUPER"}), h.Create)
+	app.Post("/users", injectCaller(&domain.Actor{ID: "U1", Role: "SUPER", Tier: tierFor("SUPER")}), h.Create)
 
 	req := httptest.NewRequest(http.MethodPost, "/users",
 		jsonBody(t, map[string]string{"username": "alice", "password": "pass123"}))
@@ -405,7 +482,7 @@ func TestUserHandler_Create_Error(t *testing.T) {
 	}
 	app := fiber.New()
 	h := NewUserHandler(svc)
-	app.Post("/users", injectCaller(&domain.Actor{ID: "U1", Role: "SUPER"}), h.Create)
+	app.Post("/users", injectCaller(&domain.Actor{ID: "U1", Role: "SUPER", Tier: tierFor("SUPER")}), h.Create)
 
 	req := httptest.NewRequest(http.MethodPost, "/users",
 		jsonBody(t, map[string]string{"username": "alice", "password": "pass123"}))
@@ -424,7 +501,7 @@ func TestUserHandler_FindAll_Success(t *testing.T) {
 	}
 	app := fiber.New()
 	h := NewUserHandler(svc)
-	app.Get("/users", injectCaller(&domain.Actor{ID: "U1", Role: "ADMIN"}), h.FindAll)
+	app.Get("/users", injectCaller(&domain.Actor{ID: "U1", Role: "ADMIN", Tier: tierFor("ADMIN")}), h.FindAll)
 
 	req := httptest.NewRequest(http.MethodGet, "/users", nil)
 	resp, err := app.Test(req)
@@ -452,7 +529,7 @@ func TestUserHandler_FindOne_Success(t *testing.T) {
 	}
 	app := fiber.New()
 	h := NewUserHandler(svc)
-	app.Get("/users/:id", injectCaller(&domain.Actor{ID: "U1", Role: "GUEST"}), h.FindOne)
+	app.Get("/users/:id", injectCaller(&domain.Actor{ID: "U1", Role: "GUEST", Tier: tierFor("GUEST")}), h.FindOne)
 
 	req := httptest.NewRequest(http.MethodGet, "/users/U1", nil)
 	resp, err := app.Test(req)
@@ -468,7 +545,7 @@ func TestUserHandler_FindOne_NotFound(t *testing.T) {
 	}
 	app := fiber.New()
 	h := NewUserHandler(svc)
-	app.Get("/users/:id", injectCaller(&domain.Actor{ID: "S1", Role: "SUPER"}), h.FindOne)
+	app.Get("/users/:id", injectCaller(&domain.Actor{ID: "S1", Role: "SUPER", Tier: tierFor("SUPER")}), h.FindOne)
 
 	req := httptest.NewRequest(http.MethodGet, "/users/NOPE", nil)
 	resp, err := app.Test(req)
@@ -502,7 +579,7 @@ func TestTenantHandler_FindAll_Success(t *testing.T) {
 	}
 	app := fiber.New()
 	h := NewTenantHandler(svc)
-	app.Get("/tenants", injectCaller(&domain.Actor{ID: "U1", Role: "ADMIN"}), h.FindAll)
+	app.Get("/tenants", injectCaller(&domain.Actor{ID: "U1", Role: "ADMIN", Tier: tierFor("ADMIN")}), h.FindAll)
 
 	req := httptest.NewRequest(http.MethodGet, "/tenants", nil)
 	resp, err := app.Test(req)
@@ -530,7 +607,7 @@ func TestTenantHandler_FindOne_Success(t *testing.T) {
 	}
 	app := fiber.New()
 	h := NewTenantHandler(svc)
-	app.Get("/tenants/:id", injectCaller(&domain.Actor{ID: "S1", Role: "SUPER"}), h.FindOne)
+	app.Get("/tenants/:id", injectCaller(&domain.Actor{ID: "S1", Role: "SUPER", Tier: tierFor("SUPER")}), h.FindOne)
 
 	req := httptest.NewRequest(http.MethodGet, "/tenants/T1", nil)
 	resp, err := app.Test(req)
@@ -546,7 +623,7 @@ func TestTenantHandler_FindOne_NotFound(t *testing.T) {
 	}
 	app := fiber.New()
 	h := NewTenantHandler(svc)
-	app.Get("/tenants/:id", injectCaller(&domain.Actor{ID: "S1", Role: "SUPER"}), h.FindOne)
+	app.Get("/tenants/:id", injectCaller(&domain.Actor{ID: "S1", Role: "SUPER", Tier: tierFor("SUPER")}), h.FindOne)
 
 	req := httptest.NewRequest(http.MethodGet, "/tenants/NOPE", nil)
 	resp, err := app.Test(req)
@@ -635,7 +712,7 @@ func TestDepartmentHandler_FindAll_Success(t *testing.T) {
 	}
 	app := fiber.New()
 	h := NewDepartmentHandler(svc)
-	app.Get("/departments", injectCaller(&domain.Actor{ID: "U1", Role: "ADMIN", TenantID: "T1"}), h.FindAll)
+	app.Get("/departments", injectCaller(&domain.Actor{ID: "U1", Role: "ADMIN", Tier: tierFor("ADMIN"), TenantID: "T1"}), h.FindAll)
 
 	req := httptest.NewRequest(http.MethodGet, "/departments", nil)
 	resp, err := app.Test(req)
@@ -663,7 +740,7 @@ func TestDepartmentHandler_FindOne_Success(t *testing.T) {
 	}
 	app := fiber.New()
 	h := NewDepartmentHandler(svc)
-	app.Get("/departments/:id", injectCaller(&domain.Actor{ID: "S1", Role: "SUPER"}), h.FindOne)
+	app.Get("/departments/:id", injectCaller(&domain.Actor{ID: "S1", Role: "SUPER", Tier: tierFor("SUPER")}), h.FindOne)
 
 	req := httptest.NewRequest(http.MethodGet, "/departments/D1", nil)
 	resp, err := app.Test(req)
@@ -679,7 +756,7 @@ func TestDepartmentHandler_FindOne_NotFound(t *testing.T) {
 	}
 	app := fiber.New()
 	h := NewDepartmentHandler(svc)
-	app.Get("/departments/:id", injectCaller(&domain.Actor{ID: "S1", Role: "SUPER"}), h.FindOne)
+	app.Get("/departments/:id", injectCaller(&domain.Actor{ID: "S1", Role: "SUPER", Tier: tierFor("SUPER")}), h.FindOne)
 
 	req := httptest.NewRequest(http.MethodGet, "/departments/NOPE", nil)
 	resp, err := app.Test(req)
@@ -724,7 +801,7 @@ func TestDepartmentHandler_Remove_Error(t *testing.T) {
 func TestGetCaller_Valid(t *testing.T) {
 	app := fiber.New()
 	var result *domain.Actor
-	app.Get("/test", injectCaller(&domain.Actor{ID: "U1", Role: "ADMIN"}), func(c fiber.Ctx) error {
+	app.Get("/test", injectCaller(&domain.Actor{ID: "U1", Role: "ADMIN", Tier: tierFor("ADMIN")}), func(c fiber.Ctx) error {
 		result = getCaller(c)
 		return c.SendString("ok")
 	})
@@ -775,7 +852,7 @@ func TestUserHandler_FindOne_ForbiddenForOtherUser(t *testing.T) {
 	}
 	app := fiber.New()
 	h := NewUserHandler(svc)
-	app.Get("/users/:id", injectCaller(&domain.Actor{ID: "GUEST1", Role: "GUEST"}), h.FindOne)
+	app.Get("/users/:id", injectCaller(&domain.Actor{ID: "GUEST1", Role: "GUEST", Tier: tierFor("GUEST")}), h.FindOne)
 
 	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/users/SOMEONE_ELSE", nil))
 	require.NoError(t, err)
@@ -792,7 +869,7 @@ func TestUserHandler_Update_ForbiddenForOtherUser(t *testing.T) {
 	}
 	app := fiber.New()
 	h := NewUserHandler(svc)
-	app.Put("/users/:id", injectCaller(&domain.Actor{ID: "GUEST1", Role: "GUEST"}), h.Update)
+	app.Put("/users/:id", injectCaller(&domain.Actor{ID: "GUEST1", Role: "GUEST", Tier: tierFor("GUEST")}), h.Update)
 
 	req := httptest.NewRequest(http.MethodPut, "/users/VICTIM", strings.NewReader(`{"display":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -812,7 +889,7 @@ func TestUserHandler_Update_NonAdminCannotEscalateRole(t *testing.T) {
 	}
 	app := fiber.New()
 	h := NewUserHandler(svc)
-	app.Put("/users/:id", injectCaller(&domain.Actor{ID: "U1", Role: "GUEST"}), h.Update)
+	app.Put("/users/:id", injectCaller(&domain.Actor{ID: "U1", Role: "GUEST", Tier: tierFor("GUEST")}), h.Update)
 
 	body := `{"role":"SUPER","status":true,"tenantId":"T9","departmentIds":["D9"],"display":"New Name"}`
 	req := httptest.NewRequest(http.MethodPut, "/users/U1", strings.NewReader(body))
@@ -839,7 +916,7 @@ func TestUserHandler_Update_AdminKeepsPrivilegedFields(t *testing.T) {
 	}
 	app := fiber.New()
 	h := NewUserHandler(svc)
-	app.Put("/users/:id", injectCaller(&domain.Actor{ID: "A1", Role: "ADMIN"}), h.Update)
+	app.Put("/users/:id", injectCaller(&domain.Actor{ID: "A1", Role: "ADMIN", Tier: tierFor("ADMIN")}), h.Update)
 
 	req := httptest.NewRequest(http.MethodPut, "/users/U2", strings.NewReader(`{"role":"USER"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -861,7 +938,7 @@ func TestAuditHandler_FindAll_Success(t *testing.T) {
 	}
 	app := fiber.New()
 	h := NewAuditHandler(svc)
-	app.Get("/audit", injectCaller(&domain.Actor{ID: "U1", Role: "SUPER"}), h.FindAll)
+	app.Get("/audit", injectCaller(&domain.Actor{ID: "U1", Role: "SUPER", Tier: tierFor("SUPER")}), h.FindAll)
 
 	req := httptest.NewRequest(http.MethodGet, "/audit?entity=USER", nil)
 	resp, err := app.Test(req)
@@ -925,16 +1002,21 @@ func TestAuthHandler_Logout_MissingTokenOrCaller(t *testing.T) {
 }
 
 func TestUserHandler_AccessReport(t *testing.T) {
-	svc := &mockUserService{AccessReportFn: func(_ context.Context, caller *domain.Actor) ([]domain.User, error) {
-		return []domain.User{{ID: "U1", Username: "alice", TenantID: caller.TenantID, Role: domain.RoleUser}}, nil
+	svc := &mockUserService{AccessReportFn: func(_ context.Context, caller *domain.Actor) ([]ports.AccessEntry, error) {
+		return []ports.AccessEntry{{
+			User: domain.User{ID: "U1", Username: "alice", TenantID: caller.TenantID, Role: "APPROVER"},
+			Tier: domain.TierMember, Permissions: []string{"result:approve"},
+		}}, nil
 	}}
 	app := fiber.New()
-	app.Get("/report", injectCaller(&domain.Actor{ID: "A1", Role: domain.RoleAdmin, TenantID: "T1"}), NewUserHandler(svc).AccessReport)
+	app.Get("/report", injectCaller(&domain.Actor{ID: "A1", Role: domain.RoleAdmin, Tier: tierFor(domain.RoleAdmin), TenantID: "T1"}), NewUserHandler(svc).AccessReport)
 
 	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/report", nil))
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	body, _ := io.ReadAll(resp.Body)
 	assert.Contains(t, string(body), `"lastLoginAt"`)
+	assert.Contains(t, string(body), `"tier":"MEMBER"`)
+	assert.Contains(t, string(body), `"permissions":["result:approve"]`)
 	assert.NotContains(t, string(body), "password")
 }

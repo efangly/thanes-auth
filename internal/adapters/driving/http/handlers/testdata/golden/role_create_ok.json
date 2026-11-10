@@ -1,0 +1,18 @@
+{
+  "status": 201,
+  "body": {
+    "message": "Success",
+    "success": true,
+    "data": {
+      "kind": "LAB",
+      "name": "APPROVER",
+      "tier": "MEMBER",
+      "description": "Approves results",
+      "permissions": [
+        "result:approve"
+      ],
+      "createdAt": "2024-01-02T03:04:05Z",
+      "updatedAt": "2024-01-02T03:04:05Z"
+    }
+  }
+}

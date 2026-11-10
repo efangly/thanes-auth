@@ -16,7 +16,7 @@ func newTestTenantService(repo *mockTenantRepo) (ports.TenantService, *mockCache
 	cache := newMockCache()
 	upload := newMockUpload()
 	messaging := newMockMessaging()
-	svc := NewTenantService(repo, cache, upload, messaging, newMockAuditService())
+	svc := NewTenantService(repo, &mockRoleRepo{}, cache, upload, messaging, newMockAuditService())
 	return svc, cache, upload, messaging
 }
 
@@ -128,7 +128,6 @@ func TestTenantService_UpdateLabels(t *testing.T) {
 		{"SUPER", superCaller, "T1", good, ""},
 		{"SERVICE", actor(domain.RoleService, ""), "T2", good, ""},
 		{"ADMIN of the tenant", actor(domain.RoleAdmin, "T1"), "T1", good, ""},
-		{"LEGACY_ADMIN of the tenant", actor(domain.RoleLegacyAdmin, "T1"), "T1", good, ""},
 		{"ADMIN of another tenant", actor(domain.RoleAdmin, "T1"), "T2", good, "tenant not found"},
 		{"USER of the tenant", actor(domain.RoleUser, "T1"), "T1", good, "tenant not found"},
 		{"empty profile resets to defaults", superCaller, "T1", domain.Labels{}, ""},
@@ -247,7 +246,7 @@ func TestBuildTenantFilter(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.role)+"/"+tt.tenantID, func(t *testing.T) {
-			filter, key, ok := buildTenantFilter(&domain.Actor{Role: tt.role, TenantID: tt.tenantID})
+			filter, key, ok := buildTenantFilter(&domain.Actor{Role: tt.role, Tier: tierFor(tt.role), TenantID: tt.tenantID})
 			assert.Equal(t, tt.wantOK, ok)
 			assert.Equal(t, tt.wantFilter, filter)
 			assert.Equal(t, tt.wantKey, key)

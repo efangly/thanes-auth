@@ -6,9 +6,11 @@ Guidance for Claude Code when working in this repository.
 
 `smtrack-authentication` — the authentication/authorization microservice for the SMtrack
 platform. Go 1.26, Fiber v3, GORM/PostgreSQL, Redis, RabbitMQ. It issues JWTs and owns the
-`users`, `tenants`, `departments`, `user_departments`, `tenant_profiles` and `audit_logs`
-tables. A tenant (hospital, laboratory, factory, …) has departments; a user belongs to one
-tenant and any number of its departments (`GLOSSARY.md`, ADR 0003).
+`users`, `tenants`, `departments`, `user_departments`, `tenant_profiles`, `audit_logs` and
+role catalogue (`roles`, `permissions`, `role_permissions`) tables. A tenant (hospital,
+laboratory, factory, …) has departments; a user belongs to one tenant and any number of its
+departments (`GLOSSARY.md`, ADR 0003), and holds one role whose tier decides what it may do
+here (ADR 0006).
 
 It sits behind a **KrakenD API gateway** in production. All routes are served under the
 `/auth` prefix.
@@ -124,8 +126,19 @@ These were bugs once. Do not regress them.
 - **`/auth/user/:id` routes are ownership-checked in the handler**, not just by role:
   a non-admin-tier caller may only touch its own record, and `role`/`status`/`tenantId`/
   `departmentIds` are stripped from its update. Use `domain.Actor.IsAdminTier()` for that test —
-  admin tier is SUPER, SERVICE, ADMIN, LEGACY_ADMIN.
-- **Tenant scope is enforced in the services.** ADMIN/LEGACY_ADMIN may only read, change
+  admin tier is the SUPER, SERVICE and ADMIN tiers.
+- **Authorization is by tier, never by role name** (ADR 0006). SUPER, SERVICE and GUEST are
+  platform roles (`domain.Role.PlatformTier`); every other role lives in the role catalogue
+  (`roles`, `permissions`, `role_permissions`, migration 00003) for one tenant kind and has a
+  fixed tier (ADMIN, MEMBER or GUEST). Resolve a role with `resolveRole` in
+  `core/services/roles.go` — straight from `ports.RoleRepository`, never cached. Switch on
+  `Actor.Tier`, not `Actor.Role`. A role the catalogue does not know signs in as GUEST and,
+  as a target, counts as ADMIN (`targetTier`): both fail closed. Permissions are only carried in
+  the token for other systems; this service never checks them. Only SUPER changes the catalogue;
+  a role or permission still in use (soft-deleted users included) cannot be removed, a role's
+  tier never changes, and a tenant's kind cannot change while a held role would vanish or change
+  tier (`tenantService.checkKindChange`).
+- **Tenant scope is enforced in the services.** The ADMIN tier may only read, change
   or place users in their own tenant (`canAdminTenant` in `core/services/scope.go`);
   `FindOne` for tenants and departments mirrors the matching `build*Filter` listing
   (`canSeeTenant`, `canSeeDepartment`). Non-admin roles see only their own tenant and only
@@ -133,16 +146,19 @@ These were bugs once. Do not regress them.
   records read as *not found*. Every caller-facing `FindOne` takes the caller; the unscoped
   `UserService.FindByID` / `FindByUsername` exist only for the auth flows. A user's
   departments must belong to the user's tenant (`checkDepartments`), and moving a user to
-  another tenant requires saying which departments it has there. A tenant can be deleted
+  another tenant requires saying which departments it has there — and, when the new tenant
+  is of another kind, which role. A tenant can be deleted
   only when empty. `/auth/audit` is SUPER/SERVICE only because logs are not tenant-scoped.
-- **Role ceiling is enforced in `userService`, not the handler.** `domain.Role.CanAssign`
-  (via `domain.Actor.CanAssign`)
-  decides which roles a caller may assign *and* which existing users it may update or
-  delete: SUPER → any; SERVICE → any but SUPER; ADMIN/LEGACY_ADMIN → USER, LEGACY_USER,
-  GUEST. Nobody may change their own role. A nil caller may only create a GUEST (public
+- **Role ceiling is enforced in `userService`, not the handler.** `domain.Tier.CanAssign`
+  (via `domain.Actor.CanAssign`) decides, from the tier of the role resolved for the tenant's
+  kind, which roles a caller may assign *and* which existing users it may update or
+  delete: SUPER → any; SERVICE → any but SUPER; ADMIN → MEMBER and GUEST roles of its own
+  kind, whatever permissions they grant. A role must exist for the user's tenant kind
+  (`checkAssignable`). Nobody may change their own role. A nil caller may only create a GUEST (public
   register) and may not update or remove. Authorization reads the target from the
   repository, never the cache.
-- **Every mutating route carries a `RolesGuard`.** `PUT`/`DELETE /auth/ward/:id` once had
+- **Every mutating route carries a `TiersGuard`** (`adminTier`, `systemWide` or `superOnly` in
+  `router.go`). `PUT`/`DELETE /auth/ward/:id` once had
   none, so any token — including a self-registered GUEST — could rename or delete any ward.
   `TestRouter_MutatingRoutes_RequireTheirRoles` lists every one (restore routes included).
   `internal/adapters/driving/http/router_test.go` drives the real route table; extend it
@@ -152,7 +168,8 @@ These were bugs once. Do not regress them.
   password, so neither the message nor the timing reveals that the account exists.
 - **Access and refresh tokens are not interchangeable.** They use different secrets and a
   `typ` claim checked by `adapters/driven/security/jwt.go`; a token without `typ` is
-  rejected. Claims are `tenantId` and `departmentIds`.
+  rejected. Claims are `role`, `tier`, `tenantId`, `tenantKind`, `departmentIds` and
+  `permissions`; an access token without a valid `tier` is rejected too.
 - **No password-strength policy yet.** DTOs keep the old rule (4–20 characters) so users carried
   over from the old system are not affected. A stronger rule (ISO/IEC 27001 gap) belongs in
   `userService.Create` / `Update`, the two places that hash, and not at login.

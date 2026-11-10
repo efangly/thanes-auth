@@ -23,7 +23,7 @@ func TestUserService_Update_HashesPassword(t *testing.T) {
 	audit.RecordFn = func(_ context.Context, _ domain.AuditEntity, _ domain.AuditAction, _ string, _ *domain.Actor, changes any) {
 		audited = changes
 	}
-	svc := NewUserService(repo, &mockTenantRepo{FindByIDFn: tenantsExist}, &mockDepartmentRepo{}, newMockCache(), newMockUpload(), &fakeHasher{}, audit)
+	svc := NewUserService(repo, &mockTenantRepo{FindByIDFn: tenantsExist}, &mockDepartmentRepo{}, &mockRoleRepo{}, newMockCache(), newMockUpload(), &fakeHasher{}, audit)
 
 	_, err := svc.Update(context.Background(), "U1", domain.UserPatch{Password: ptr("newpass1-long-enough"), Display: ptr("me")}, nil, superCaller)
 	require.NoError(t, err)

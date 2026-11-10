@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/efangly/smtrack-authentication/internal/core/domain"
+	"github.com/efangly/smtrack-authentication/internal/core/ports"
 )
 
 // The response types are the JSON the API returns. The core's domain types
@@ -165,6 +166,28 @@ func FromUsers(users []domain.User) []UserResponse {
 	out := make([]UserResponse, len(users))
 	for i := range users {
 		out[i] = FromUser(&users[i])
+	}
+	return out
+}
+
+// AccessEntryResponse is one line of the access review: the user, and the tier
+// and permissions its role gives it. An empty tier means the role is not in
+// the catalogue of the user's tenant kind.
+type AccessEntryResponse struct {
+	UserResponse
+	Tier        domain.Tier `json:"tier"`
+	Permissions []string    `json:"permissions"`
+}
+
+// FromAccessEntries converts an access review to its JSON shape.
+func FromAccessEntries(entries []ports.AccessEntry) []AccessEntryResponse {
+	out := make([]AccessEntryResponse, len(entries))
+	for i := range entries {
+		out[i] = AccessEntryResponse{
+			UserResponse: FromUser(&entries[i].User),
+			Tier:         entries[i].Tier,
+			Permissions:  nonNil(entries[i].Permissions),
+		}
 	}
 	return out
 }

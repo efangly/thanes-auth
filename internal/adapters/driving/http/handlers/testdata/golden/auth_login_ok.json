@@ -13,6 +13,11 @@
         "DID-1"
       ],
       "role": "USER",
+      "tier": "MEMBER",
+      "tenantKind": "HOSPITAL",
+      "permissions": [
+        "result:view"
+      ],
       "pic": null
     }
   }

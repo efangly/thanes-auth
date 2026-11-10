@@ -40,7 +40,7 @@ deploy their side. Allow a short write freeze.
 
 ## 2. Deploy v2 beside v1 (no traffic)
 
-Manifests are in the GitOps repository; run these from the root of a checkout of it.
+Manifests are in the GitOps repository (`thanes-auth/`) and Argo CD syncs them. Without Argo CD, run these from that directory.
 
 ```bash
 kubectl apply -f deploy-v2.yaml
@@ -75,16 +75,18 @@ and `HOSPITAL` stay as history).
    note that a write-freeze also stops registrations).
 2. **Final import**, then **`--verify`**. Do not continue unless verify prints no problems.
 3. Label overrides, if any: `PUT /auth/tenant/:id/labels` (as SUPER/SERVICE).
-4. Set `RABBITMQ` on v2 (from the `rabbitmq-config` ConfigMap) and roll it:
-   `kubectl -n smtrack rollout restart deploy/authentication-v2`.
+4. Set `RABBITMQ` on v2: uncomment the `RABBITMQ` block in `deploy-v2.yaml` (GitOps repository,
+   from the `rabbitmq-config` ConfigMap) and push; Argo CD rolls the pods.
 5. Gateway owner points the `/auth` backend at the `authentication-v2` Service; frontend and
    device service deploy their new versions at the same moment.
 6. Everyone signs in again once (new secrets, new claims). That is expected.
 
 ## 5. Verify after the switch
 
-- [ ] Sign in as SUPER, a hospital ADMIN, a plain USER and (if any) a LEGACY_ADMIN. Each sees only
-      what the scope rules allow (ADMIN: own tenant; USER: own tenant and linked departments).
+- [ ] Sign in as SUPER, a hospital ADMIN, a plain USER and a former LEGACY_ADMIN (now ADMIN,
+      migration 00003). Each sees only what the scope rules allow (ADMIN: own tenant, no SERVICE
+      users; USER: own tenant and linked departments). Each token carries `tier` and `tenantKind`.
+- [ ] `GET /auth/role` as SUPER lists `ADMIN` and `USER` for every tenant kind.
 - [ ] `GET /auth/audit?action=LOGIN_SUCCESS` shows the sign-ins with IP, user agent and request id.
 - [ ] Device service resolves users/tenants/departments with the new routes.
 - [ ] No `ACCESS_DENIED` or `LOGIN_FAILURE` burst in the audit log or Loki.

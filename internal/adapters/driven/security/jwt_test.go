@@ -17,7 +17,10 @@ const (
 	refreshSecret = "test-refresh-secret"
 )
 
-var testActor = domain.Actor{ID: "U1", Name: "Admin", Role: domain.RoleAdmin, TenantID: "T1", DepartmentIDs: []string{"D1", "D2"}}
+var testActor = domain.Actor{
+	ID: "U1", Name: "Admin", Role: "LAB_HEAD", Tier: domain.TierAdmin, TenantID: "T1", TenantKind: domain.TenantKindLab,
+	DepartmentIDs: []string{"D1", "D2"}, Permissions: []string{"result:approve", "result:view"},
+}
 
 func newTestIssuer() *jwtIssuer {
 	return NewJWTIssuer(&config.Config{
@@ -64,8 +67,11 @@ func TestJWTIssuer_ClaimsAndLifetimes(t *testing.T) {
 		jwt.WithTimeFunc(func() time.Time { return now }))
 	require.NoError(t, err)
 	assert.Equal(t, "access", claims["typ"])
-	assert.Equal(t, "ADMIN", claims["role"])
+	assert.Equal(t, "LAB_HEAD", claims["role"])
+	assert.Equal(t, "ADMIN", claims["tier"])
 	assert.Equal(t, "T1", claims["tenantId"])
+	assert.Equal(t, "LAB", claims["tenantKind"])
+	assert.Equal(t, []any{"result:approve", "result:view"}, claims["permissions"])
 	assert.Equal(t, []any{"D1", "D2"}, claims["departmentIds"])
 	assert.EqualValues(t, now.Add(time.Hour).Unix(), claims["exp"])
 
@@ -98,6 +104,31 @@ func TestJWTIssuer_VerifyAccessReturnsTenantAndDepartments(t *testing.T) {
 	actor, err := j.VerifyAccess(pair.Access)
 	require.NoError(t, err)
 	assert.Equal(t, testActor, *actor)
+}
+
+// Authorization is by tier, so an access token without a valid one — issued
+// before tiers existed, or crafted — is not honoured; refresh rebuilds it.
+func TestJWTIssuer_AccessTokenWithoutTierIsRejected(t *testing.T) {
+	j := newTestIssuer()
+	exp := time.Now().Add(time.Hour).Unix()
+	for _, tier := range []any{nil, "", "ROOT"} {
+		claims := jwt.MapClaims{"id": "U1", "role": "SUPER", "typ": "access", "exp": exp}
+		if tier != nil {
+			claims["tier"] = tier
+		}
+		_, err := j.VerifyAccess(sign(t, accessSecret, claims))
+		assert.Error(t, err, "tier %v", tier)
+	}
+}
+
+func TestJWTIssuer_EmptyPermissionsAreAList(t *testing.T) {
+	j := newTestIssuer()
+	pair, err := j.IssuePair(domain.Actor{ID: "U1", Role: domain.RoleGuest, Tier: domain.TierGuest})
+	require.NoError(t, err)
+	claims := jwt.MapClaims{}
+	_, err = jwt.ParseWithClaims(pair.Access, claims, func(*jwt.Token) (any, error) { return []byte(accessSecret), nil })
+	require.NoError(t, err)
+	assert.Equal(t, []any{}, claims["permissions"], "downstream systems can rely on a list")
 }
 
 func TestJWTIssuer_TokenWithoutTypIsRejected(t *testing.T) {

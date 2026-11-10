@@ -47,7 +47,7 @@ func (s stubUserService) FindByUsername(context.Context, string) (*domain.User, 
 }
 func (s stubUserService) UsernameTaken(context.Context, string) (bool, error) { return false, nil }
 func (s stubUserService) RecordLogin(context.Context, string) error           { return nil }
-func (s stubUserService) AccessReport(context.Context, *domain.Actor) ([]domain.User, error) {
+func (s stubUserService) AccessReport(context.Context, *domain.Actor) ([]ports.AccessEntry, error) {
 	s.rec.called = true
 	return nil, nil
 }
@@ -122,6 +122,45 @@ func (s stubDepartmentService) Restore(context.Context, string, *domain.Actor) (
 	return &domain.Department{}, nil
 }
 
+type stubRoleService struct{ rec *recorder }
+
+func (s stubRoleService) FindRoles(context.Context, domain.TenantKind, *domain.Actor) ([]domain.RoleDefinition, error) {
+	s.rec.called = true
+	return nil, nil
+}
+func (s stubRoleService) FindRole(context.Context, domain.TenantKind, domain.Role, *domain.Actor) (*domain.RoleDefinition, error) {
+	s.rec.called = true
+	return &domain.RoleDefinition{}, nil
+}
+func (s stubRoleService) CreateRole(context.Context, *domain.RoleDefinition, *domain.Actor) (*domain.RoleDefinition, error) {
+	s.rec.called = true
+	return &domain.RoleDefinition{}, nil
+}
+func (s stubRoleService) UpdateRole(context.Context, domain.TenantKind, domain.Role, domain.RolePatch, *domain.Actor) (*domain.RoleDefinition, error) {
+	s.rec.called = true
+	return &domain.RoleDefinition{}, nil
+}
+func (s stubRoleService) RemoveRole(context.Context, domain.TenantKind, domain.Role, *domain.Actor) error {
+	s.rec.called = true
+	return nil
+}
+func (s stubRoleService) FindPermissions(context.Context, domain.TenantKind, *domain.Actor) ([]domain.Permission, error) {
+	s.rec.called = true
+	return nil, nil
+}
+func (s stubRoleService) CreatePermission(context.Context, *domain.Permission, *domain.Actor) (*domain.Permission, error) {
+	s.rec.called = true
+	return &domain.Permission{}, nil
+}
+func (s stubRoleService) UpdatePermission(context.Context, domain.TenantKind, string, domain.PermissionPatch, *domain.Actor) (*domain.Permission, error) {
+	s.rec.called = true
+	return &domain.Permission{}, nil
+}
+func (s stubRoleService) RemovePermission(context.Context, domain.TenantKind, string, *domain.Actor) error {
+	s.rec.called = true
+	return nil
+}
+
 // stubAuditService records whether a listing got past the router.
 type stubAuditService struct{ listed bool }
 
@@ -155,40 +194,54 @@ func newTestRouterCfg(cfg *config.Config, rec *recorder, auditSvc ports.AuditSer
 		handlers.NewTenantHandler(stubTenantService{rec}),
 		handlers.NewDepartmentHandler(stubDepartmentService{rec}),
 		handlers.NewAuditHandler(auditSvc),
+		handlers.NewRoleHandler(stubRoleService{rec}),
 		handlers.NewHealthHandler(),
 		handlers.NewImageHandler(nil),
 	).Setup()
 	return app
 }
 
+// tiers is the tier each test role carries in its token.
+var tiers = map[domain.Role]domain.Tier{
+	domain.RoleSuper: domain.TierSuper, domain.RoleService: domain.TierService,
+	domain.RoleAdmin: domain.TierAdmin, domain.RoleUser: domain.TierMember, domain.RoleGuest: domain.TierGuest,
+}
+
 func tokenFor(t *testing.T, role domain.Role) string {
 	t.Helper()
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+	return signClaims(t, jwt.MapClaims{
 		"id":            "U1",
 		"name":          "Test User",
 		"role":          string(role),
+		"tier":          string(tiers[role]),
 		"tenantId":      "T1",
+		"tenantKind":    "LAB",
 		"departmentIds": []string{"D1"},
 		"typ":           "access",
 		"exp":           time.Now().Add(time.Hour).Unix(),
 		"iat":           time.Now().Unix(),
 	})
+}
+
+func signClaims(t *testing.T, claims jwt.MapClaims) string {
+	t.Helper()
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString([]byte(testJWTSecret))
 	require.NoError(t, err)
 	return signed
 }
 
 var allRoles = []domain.Role{
-	domain.RoleSuper, domain.RoleService, domain.RoleAdmin, domain.RoleLegacyAdmin,
-	domain.RoleUser, domain.RoleLegacyUser, domain.RoleGuest,
+	domain.RoleSuper, domain.RoleService, domain.RoleAdmin, domain.RoleUser, domain.RoleGuest,
 }
 
-// Every route that changes state carries a RolesGuard. A mutating route added
+// Every route that changes state carries a TiersGuard. A mutating route added
 // without one let any token — even a self-registered GUEST — rename or delete
 // other people's records once; list each new route here.
 func TestRouter_MutatingRoutes_RequireTheirRoles(t *testing.T) {
 	system := []domain.Role{domain.RoleSuper, domain.RoleService}
-	tenantAdmin := []domain.Role{domain.RoleSuper, domain.RoleService, domain.RoleAdmin, domain.RoleLegacyAdmin}
+	tenantAdmin := []domain.Role{domain.RoleSuper, domain.RoleService, domain.RoleAdmin}
+	super := []domain.Role{domain.RoleSuper}
 	routes := []struct {
 		method, path, body string
 		allowed            []domain.Role
@@ -206,6 +259,15 @@ func TestRouter_MutatingRoutes_RequireTheirRoles(t *testing.T) {
 		{http.MethodPut, "/auth/department/D1", `{"name":"renamed"}`, system},
 		{http.MethodDelete, "/auth/department/D1", "", system},
 		{http.MethodPost, "/auth/department/D1/restore", "", system},
+		{http.MethodGet, "/auth/role", "", tenantAdmin},
+		{http.MethodGet, "/auth/role/LAB/APPROVER", "", tenantAdmin},
+		{http.MethodPost, "/auth/role", `{"kind":"LAB","name":"APPROVER","tier":"MEMBER"}`, super},
+		{http.MethodPut, "/auth/role/LAB/APPROVER", `{"description":"x"}`, super},
+		{http.MethodDelete, "/auth/role/LAB/APPROVER", "", super},
+		{http.MethodGet, "/auth/permission", "", tenantAdmin},
+		{http.MethodPost, "/auth/permission", `{"kind":"LAB","key":"result:approve"}`, super},
+		{http.MethodPut, "/auth/permission/LAB/result:approve", `{"description":"x"}`, super},
+		{http.MethodDelete, "/auth/permission/LAB/result:approve", "", super},
 	}
 
 	for _, rt := range routes {
@@ -229,6 +291,40 @@ func TestRouter_MutatingRoutes_RequireTheirRoles(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Only the tier counts: a role name that sounds powerful gets nothing without
+// the tier, and a token without a tier is not honoured at all.
+func TestRouter_GuardsReadTheTierNotTheRole(t *testing.T) {
+	claims := func(role, tier string) jwt.MapClaims {
+		c := jwt.MapClaims{"id": "U1", "role": role, "tenantId": "T1", "typ": "access",
+			"exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix()}
+		if tier != "" {
+			c["tier"] = tier
+		}
+		return c
+	}
+	tests := []struct {
+		name, role, tier string
+		want             int
+	}{
+		{"SUPER name with MEMBER tier", "SUPER", "MEMBER", fiber.StatusForbidden},
+		{"lab role with ADMIN tier", "LAB_HEAD", "ADMIN", fiber.StatusOK},
+		{"no tier claim", "SUPER", "", fiber.StatusUnauthorized},
+		{"unknown tier", "SUPER", "ROOT", fiber.StatusUnauthorized},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := &recorder{}
+			app := newTestRouter(rec)
+			req := httptest.NewRequest(http.MethodGet, "/auth/user", nil)
+			req.Header.Set("Authorization", "Bearer "+signClaims(t, claims(tt.role, tt.tier)))
+			resp, err := app.Test(req)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, resp.StatusCode)
+			assert.Equal(t, tt.want == fiber.StatusOK, rec.called)
+		})
 	}
 }
 

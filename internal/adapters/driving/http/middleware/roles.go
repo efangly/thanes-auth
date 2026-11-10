@@ -6,8 +6,9 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
-// RolesGuard creates a role-based authorization middleware
-func RolesGuard(allowedRoles ...domain.Role) fiber.Handler {
+// TiersGuard lets a request through only when the caller's tier is one of
+// allowed. Roles are not checked here: this service decides by tier alone (ADR 0006).
+func TiersGuard(allowed ...domain.Tier) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		user := c.Locals("user")
 		if user == nil {
@@ -19,13 +20,13 @@ func RolesGuard(allowedRoles ...domain.Role) fiber.Handler {
 			return c.Status(fiber.StatusUnauthorized).JSON(dto.FailResponse("Invalid user context"))
 		}
 
-		// If no roles specified, allow all authenticated users
-		if len(allowedRoles) == 0 {
+		// If no tiers specified, allow all authenticated users
+		if len(allowed) == 0 {
 			return c.Next()
 		}
 
-		for _, role := range allowedRoles {
-			if role == payload.Role {
+		for _, tier := range allowed {
+			if tier == payload.Tier {
 				return c.Next()
 			}
 		}

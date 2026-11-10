@@ -23,6 +23,7 @@ type Router struct {
 	tenantHandler     *handlers.TenantHandler
 	departmentHandler *handlers.DepartmentHandler
 	auditHandler      *handlers.AuditHandler
+	roleHandler       *handlers.RoleHandler
 	healthHandler     *handlers.HealthHandler
 	imageHandler      *handlers.ImageHandler
 }
@@ -36,6 +37,7 @@ func NewRouter(
 	tenantHandler *handlers.TenantHandler,
 	departmentHandler *handlers.DepartmentHandler,
 	auditHandler *handlers.AuditHandler,
+	roleHandler *handlers.RoleHandler,
 	healthHandler *handlers.HealthHandler,
 	imageHandler *handlers.ImageHandler,
 ) *Router {
@@ -48,6 +50,7 @@ func NewRouter(
 		tenantHandler:     tenantHandler,
 		departmentHandler: departmentHandler,
 		auditHandler:      auditHandler,
+		roleHandler:       roleHandler,
 		healthHandler:     healthHandler,
 		imageHandler:      imageHandler,
 	}
@@ -95,14 +98,19 @@ func (r *Router) Setup() {
 	// JWT-protected middleware
 	jwtAuth := middleware.JWTAuth(r.tokens)
 
+	// Guards by tier (ADR 0006): which roles hold a tier comes from the catalogue.
+	adminTier := middleware.TiersGuard(domain.TierSuper, domain.TierService, domain.TierAdmin)
+	systemWide := middleware.TiersGuard(domain.TierSuper, domain.TierService)
+	superOnly := middleware.TiersGuard(domain.TierSuper)
+
 	// User routes
 	userGroup := auth.Group("/user", jwtAuth)
 	userGroup.Post("/",
-		middleware.RolesGuard(domain.RoleSuper, domain.RoleService, domain.RoleAdmin, domain.RoleLegacyAdmin),
+		adminTier,
 		r.userHandler.Create,
 	)
 	userGroup.Get("/",
-		middleware.RolesGuard(domain.RoleSuper, domain.RoleService, domain.RoleAdmin, domain.RoleLegacyAdmin),
+		adminTier,
 		r.userHandler.FindAll,
 	)
 	// FindOne and Update additionally enforce ownership inside the handler:
@@ -110,51 +118,51 @@ func (r *Router) Setup() {
 	userGroup.Get("/:id", r.userHandler.FindOne)
 	userGroup.Put("/:id", r.userHandler.Update)
 	userGroup.Delete("/:id",
-		middleware.RolesGuard(domain.RoleSuper, domain.RoleService, domain.RoleAdmin, domain.RoleLegacyAdmin),
+		adminTier,
 		r.userHandler.Remove,
 	)
 	userGroup.Post("/:id/restore",
-		middleware.RolesGuard(domain.RoleSuper, domain.RoleService, domain.RoleAdmin, domain.RoleLegacyAdmin),
+		adminTier,
 		r.userHandler.Restore,
 	)
 
 	// Access review: who holds which role where, and when they last signed in.
 	auth.Get("/report/access", jwtAuth,
-		middleware.RolesGuard(domain.RoleSuper, domain.RoleService, domain.RoleAdmin, domain.RoleLegacyAdmin),
+		adminTier,
 		r.userHandler.AccessReport,
 	)
 
 	// Tenant routes
 	tenantGroup := auth.Group("/tenant", jwtAuth)
 	tenantGroup.Post("/",
-		middleware.RolesGuard(domain.RoleSuper, domain.RoleService),
+		systemWide,
 		r.tenantHandler.Create,
 	)
 	tenantGroup.Get("/", r.tenantHandler.FindAll)
 	tenantGroup.Get("/:id", r.tenantHandler.FindOne)
 	tenantGroup.Put("/:id",
-		middleware.RolesGuard(domain.RoleSuper, domain.RoleService),
+		systemWide,
 		r.tenantHandler.Update,
 	)
 	// A tenant's own admin may rename its labels; the service confirms the
 	// tenant is the caller's.
 	tenantGroup.Put("/:id/labels",
-		middleware.RolesGuard(domain.RoleSuper, domain.RoleService, domain.RoleAdmin, domain.RoleLegacyAdmin),
+		adminTier,
 		r.tenantHandler.UpdateLabels,
 	)
 	tenantGroup.Delete("/:id",
-		middleware.RolesGuard(domain.RoleSuper),
+		superOnly,
 		r.tenantHandler.Remove,
 	)
 	tenantGroup.Post("/:id/restore",
-		middleware.RolesGuard(domain.RoleSuper),
+		superOnly,
 		r.tenantHandler.Restore,
 	)
 
 	// Department routes
 	departmentGroup := auth.Group("/department", jwtAuth)
 	departmentGroup.Post("/",
-		middleware.RolesGuard(domain.RoleSuper, domain.RoleService),
+		systemWide,
 		r.departmentHandler.Create,
 	)
 	departmentGroup.Get("/", r.departmentHandler.FindAll)
@@ -163,23 +171,38 @@ func (r *Router) Setup() {
 	// caller — including a self-registered GUEST — could rename or delete any
 	// department.
 	departmentGroup.Put("/:id",
-		middleware.RolesGuard(domain.RoleSuper, domain.RoleService),
+		systemWide,
 		r.departmentHandler.Update,
 	)
 	departmentGroup.Delete("/:id",
-		middleware.RolesGuard(domain.RoleSuper, domain.RoleService),
+		systemWide,
 		r.departmentHandler.Remove,
 	)
 	departmentGroup.Post("/:id/restore",
-		middleware.RolesGuard(domain.RoleSuper, domain.RoleService),
+		systemWide,
 		r.departmentHandler.Restore,
 	)
+
+	// Role catalogue. Reading is scoped in the service (a tenant-scoped admin
+	// sees its own kind); only SUPER changes it.
+	roleGroup := auth.Group("/role", jwtAuth)
+	roleGroup.Get("/", adminTier, r.roleHandler.FindRoles)
+	roleGroup.Post("/", superOnly, r.roleHandler.CreateRole)
+	roleGroup.Get("/:kind/:name", adminTier, r.roleHandler.FindRole)
+	roleGroup.Put("/:kind/:name", superOnly, r.roleHandler.UpdateRole)
+	roleGroup.Delete("/:kind/:name", superOnly, r.roleHandler.RemoveRole)
+
+	permissionGroup := auth.Group("/permission", jwtAuth)
+	permissionGroup.Get("/", adminTier, r.roleHandler.FindPermissions)
+	permissionGroup.Post("/", superOnly, r.roleHandler.CreatePermission)
+	permissionGroup.Put("/:kind/:key", superOnly, r.roleHandler.UpdatePermission)
+	permissionGroup.Delete("/:kind/:key", superOnly, r.roleHandler.RemovePermission)
 
 	// Audit log routes (read-only). Logs are not tenant-scoped, so only the
 	// system-wide roles may read them.
 	auditGroup := auth.Group("/audit", jwtAuth)
 	auditGroup.Get("/",
-		middleware.RolesGuard(domain.RoleSuper, domain.RoleService),
+		systemWide,
 		r.auditHandler.FindAll,
 	)
 }

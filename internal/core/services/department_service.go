@@ -221,12 +221,12 @@ func (s *departmentService) invalidate(ctx context.Context) {
 // buildDepartmentFilter is the department listing each role may see, and its
 // cache key. ok is false when the caller's scope is empty.
 func buildDepartmentFilter(caller *domain.Actor) (filter ports.DepartmentFilter, key string, ok bool) {
-	switch caller.Role {
-	case domain.RoleSuper:
+	switch caller.Tier {
+	case domain.TierSuper:
 		return ports.DepartmentFilter{}, "department", true
-	case domain.RoleService:
+	case domain.TierService:
 		return ports.DepartmentFilter{ExcludeHiddenTenants: true}, "department:service", true
-	case domain.RoleAdmin, domain.RoleLegacyAdmin:
+	case domain.TierAdmin:
 		if caller.TenantID == "" {
 			return filter, "", false
 		}

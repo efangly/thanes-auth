@@ -65,8 +65,11 @@ func (j *jwtIssuer) sign(actor domain.Actor, typ string, ttl time.Duration, secr
 		"id":            actor.ID,
 		"name":          actor.Name,
 		"role":          string(actor.Role),
+		"tier":          string(actor.Tier),
 		"tenantId":      actor.TenantID,
+		"tenantKind":    string(actor.TenantKind),
 		"departmentIds": actor.DepartmentIDs,
+		"permissions":   nonNil(actor.Permissions),
 		"typ":           typ,
 		"exp":           now.Add(ttl).Unix(),
 		"iat":           now.Unix(),
@@ -79,12 +82,22 @@ func (j *jwtIssuer) VerifyAccess(token string) (*domain.Actor, error) {
 	if !ok {
 		return nil, errInvalidToken
 	}
+	// Every decision here is made by tier, so a token without a valid one
+	// (issued before roles had tiers, or forged without one) is not honoured;
+	// the client refreshes and gets one rebuilt from the database.
+	tier := domain.Tier(claimString(claims, "tier"))
+	if !tier.IsValid() {
+		return nil, errInvalidToken
+	}
 	return &domain.Actor{
 		ID:            claimString(claims, "id"),
 		Name:          claimString(claims, "name"),
 		Role:          domain.Role(claimString(claims, "role")),
+		Tier:          tier,
 		TenantID:      claimString(claims, "tenantId"),
+		TenantKind:    domain.TenantKind(claimString(claims, "tenantKind")),
 		DepartmentIDs: claimStrings(claims, "departmentIds"),
+		Permissions:   claimStrings(claims, "permissions"),
 	}, nil
 }
 
@@ -168,4 +181,11 @@ func parseDuration(s string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }

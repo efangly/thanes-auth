@@ -23,18 +23,49 @@ func TestUserService_AccessReport_ScopedUncachedAndAudited(t *testing.T) {
 		actions = append(actions, a)
 	}
 
-	users, err := f.svc.AccessReport(context.Background(), &domain.Actor{ID: "A1", Role: domain.RoleAdmin, TenantID: "T1"})
+	users, err := f.svc.AccessReport(context.Background(), &domain.Actor{ID: "A1", Role: domain.RoleAdmin, Tier: tierFor(domain.RoleAdmin), TenantID: "T1"})
 	require.NoError(t, err)
 	require.Len(t, users, 1)
-	assert.Empty(t, users[0].Password)
+	assert.Empty(t, users[0].User.Password)
 	assert.Equal(t, "T1", gotFilter.TenantID, "an admin's report stays inside the tenant")
 	assert.Equal(t, []domain.AuditAction{domain.AuditActionAccessReport}, actions)
 	assert.Empty(t, f.cache.stored, "the report must not be served from, or written to, the cache")
 }
 
+func TestUserService_AccessReport_ShowsTierAndPermissions(t *testing.T) {
+	lab := &domain.Tenant{ID: "T1", Kind: domain.TenantKindLab}
+	repo := &mockUserRepo{FindAllFn: func(context.Context, ports.UserFilter) ([]domain.User, error) {
+		return []domain.User{
+			{ID: "U1", TenantID: "T1", Tenant: lab, Role: "APPROVER"},
+			{ID: "U2", TenantID: "T1", Tenant: lab, Role: "APPROVER"},
+			{ID: "U3", TenantID: "T1", Tenant: lab, Role: domain.RoleGuest},
+			{ID: "U4", TenantID: "T1", Tenant: lab, Role: "GONE"},
+		}, nil
+	}}
+	f := newUserFixture(repo)
+	lookups := 0
+	f.roles.FindRoleFn = func(_ context.Context, kind domain.TenantKind, name domain.Role) (*domain.RoleDefinition, error) {
+		lookups++
+		if kind == domain.TenantKindLab && name == "APPROVER" {
+			return &domain.RoleDefinition{Kind: kind, Name: name, Tier: domain.TierMember, Permissions: []string{"result:approve"}}, nil
+		}
+		return nil, nil
+	}
+
+	entries, err := f.svc.AccessReport(context.Background(), superCaller)
+	require.NoError(t, err)
+	require.Len(t, entries, 4)
+	assert.Equal(t, domain.TierMember, entries[0].Tier)
+	assert.Equal(t, []string{"result:approve"}, entries[1].Permissions)
+	assert.Equal(t, domain.TierGuest, entries[2].Tier)
+	assert.Empty(t, entries[3].Tier, "a role the catalogue does not know is shown without a tier")
+	assert.NotNil(t, entries[3].Permissions)
+	assert.Equal(t, 2, lookups, "each role is looked up once; platform roles not at all")
+}
+
 func TestUserService_AccessReport_AdminTierOnly(t *testing.T) {
 	f := newUserFixture(&mockUserRepo{})
-	for _, caller := range []*domain.Actor{nil, {ID: "U1", Role: domain.RoleUser, TenantID: "T1"}, {ID: "G", Role: domain.RoleGuest}} {
+	for _, caller := range []*domain.Actor{nil, {ID: "U1", Role: domain.RoleUser, Tier: tierFor(domain.RoleUser), TenantID: "T1"}, {ID: "G", Role: domain.RoleGuest, Tier: domain.TierGuest}} {
 		_, err := f.svc.AccessReport(context.Background(), caller)
 		assert.EqualError(t, err, "unauthorized")
 	}

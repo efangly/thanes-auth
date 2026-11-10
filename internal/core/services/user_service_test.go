@@ -43,6 +43,7 @@ type userFixture struct {
 	upload  *mockUpload
 	tenants *mockTenantRepo
 	depts   *mockDepartmentRepo
+	roles   *mockRoleRepo
 	audit   *mockAuditService
 }
 
@@ -52,9 +53,10 @@ func newUserFixture(repo *mockUserRepo) *userFixture {
 		upload:  newMockUpload(),
 		tenants: &mockTenantRepo{FindByIDFn: tenantsExist},
 		depts:   &mockDepartmentRepo{FindByIDsFn: departmentsExist},
+		roles:   &mockRoleRepo{},
 		audit:   newMockAuditService(),
 	}
-	f.svc = NewUserService(repo, f.tenants, f.depts, f.cache, f.upload, &fakeHasher{}, f.audit)
+	f.svc = NewUserService(repo, f.tenants, f.depts, f.roles, f.cache, f.upload, &fakeHasher{}, f.audit)
 	return f
 }
 
@@ -65,7 +67,7 @@ func newTestUserService(repo *mockUserRepo) (ports.UserService, *mockCache, *moc
 
 // superCaller is an actor that passes every role-ceiling check, for tests
 // that are about something else.
-var superCaller = &domain.Actor{ID: "SUPER-1", Role: domain.RoleSuper}
+var superCaller = &domain.Actor{ID: "SUPER-1", Role: domain.RoleSuper, Tier: tierFor(domain.RoleSuper)}
 
 // findUser returns a user with role in tenant T1.
 func findUser(role domain.Role) func(context.Context, string) (*domain.User, error) {
@@ -230,7 +232,7 @@ func TestUserService_FindAll_TenantScopedRoleWithoutTenantSeesNothing(t *testing
 	}}
 	svc, _, _ := newTestUserService(repo)
 
-	for _, role := range []domain.Role{domain.RoleAdmin, domain.RoleLegacyAdmin, domain.RoleUser, domain.RoleGuest} {
+	for _, role := range []domain.Role{domain.RoleAdmin, domain.RoleUser, domain.RoleGuest} {
 		users, err := svc.FindAll(context.Background(), actor(role, ""))
 		require.NoError(t, err, role)
 		assert.Empty(t, users, role)
@@ -468,24 +470,22 @@ func TestUserService_Restore_RequiresCaller(t *testing.T) {
 // --- Role ceiling ---
 
 var allRoles = []domain.Role{
-	domain.RoleSuper, domain.RoleService, domain.RoleAdmin, domain.RoleLegacyAdmin,
-	domain.RoleUser, domain.RoleLegacyUser, domain.RoleGuest,
+	domain.RoleSuper, domain.RoleService, domain.RoleAdmin, domain.RoleUser, domain.RoleGuest,
 }
 
 // assignable is the role ceiling: which target roles each caller role may
 // assign, modify or delete.
 var assignable = map[domain.Role][]domain.Role{
-	domain.RoleSuper:       allRoles,
-	domain.RoleService:     {domain.RoleService, domain.RoleAdmin, domain.RoleLegacyAdmin, domain.RoleUser, domain.RoleLegacyUser, domain.RoleGuest},
-	domain.RoleAdmin:       {domain.RoleUser, domain.RoleLegacyUser, domain.RoleGuest},
-	domain.RoleLegacyAdmin: {domain.RoleUser, domain.RoleLegacyUser, domain.RoleGuest},
+	domain.RoleSuper:   allRoles,
+	domain.RoleService: {domain.RoleService, domain.RoleAdmin, domain.RoleUser, domain.RoleGuest},
+	domain.RoleAdmin:   {domain.RoleUser, domain.RoleGuest},
 }
 
 // deniedChange is the error for a caller acting on another user in its own
 // tenant: roles outside the admin tier have no tenant scope at all, so the
 // user reads as not found; admin-tier callers hit the role ceiling instead.
 func deniedChange(caller domain.Role) string {
-	if (&domain.Actor{Role: caller}).IsAdminTier() {
+	if (&domain.Actor{Role: caller, Tier: tierFor(caller)}).IsAdminTier() {
 		return "you do not have permission to modify this user"
 	}
 	return "user not found"
@@ -598,12 +598,12 @@ func TestUserService_Update_CannotChangeOwnRole(t *testing.T) {
 	}
 	svc, _, _ := newTestUserService(repo)
 
-	_, err := svc.Update(context.Background(), "A1", domain.UserPatch{Role: ptr(domain.RoleSuper)}, nil, &domain.Actor{ID: "A1", Role: domain.RoleAdmin})
+	_, err := svc.Update(context.Background(), "A1", domain.UserPatch{Role: ptr(domain.RoleSuper)}, nil, &domain.Actor{ID: "A1", Role: domain.RoleAdmin, Tier: tierFor(domain.RoleAdmin)})
 	assert.EqualError(t, err, "you cannot change your own role")
 
 	// Even SUPER cannot change its own role.
 	repo.FindByIDFn = findUser(domain.RoleSuper)
-	_, err = svc.Update(context.Background(), "S1", domain.UserPatch{Role: ptr(domain.RoleGuest)}, nil, &domain.Actor{ID: "S1", Role: domain.RoleSuper})
+	_, err = svc.Update(context.Background(), "S1", domain.UserPatch{Role: ptr(domain.RoleGuest)}, nil, &domain.Actor{ID: "S1", Role: domain.RoleSuper, Tier: tierFor(domain.RoleSuper)})
 	assert.EqualError(t, err, "you cannot change your own role")
 }
 
@@ -617,7 +617,7 @@ func TestUserService_Update_UnchangedOwnRoleIsAllowed(t *testing.T) {
 	}
 	svc, _, _ := newTestUserService(repo)
 
-	_, err := svc.Update(context.Background(), "A1", domain.UserPatch{Role: ptr(domain.RoleAdmin), Display: ptr("me")}, nil, &domain.Actor{ID: "A1", Role: domain.RoleAdmin})
+	_, err := svc.Update(context.Background(), "A1", domain.UserPatch{Role: ptr(domain.RoleAdmin), Display: ptr("me")}, nil, &domain.Actor{ID: "A1", Role: domain.RoleAdmin, Tier: tierFor(domain.RoleAdmin)})
 	assert.NoError(t, err)
 }
 
@@ -630,7 +630,7 @@ func TestUserService_Update_SelfEditAllowedForAnyRole(t *testing.T) {
 	}
 	svc, _, _ := newTestUserService(repo)
 
-	_, err := svc.Update(context.Background(), "G1", domain.UserPatch{Display: ptr("me")}, nil, &domain.Actor{ID: "G1", Role: domain.RoleGuest})
+	_, err := svc.Update(context.Background(), "G1", domain.UserPatch{Display: ptr("me")}, nil, &domain.Actor{ID: "G1", Role: domain.RoleGuest, Tier: tierFor(domain.RoleGuest)})
 	assert.NoError(t, err)
 }
 
@@ -683,14 +683,13 @@ func TestBuildUserFilter(t *testing.T) {
 		{domain.RoleSuper, "", ports.UserFilter{}, "user", true},
 		{domain.RoleService, "", ports.UserFilter{ExcludeHiddenTenants: true}, "user:service", true},
 		{domain.RoleAdmin, "T1", ports.UserFilter{TenantID: "T1", ExcludeHiddenTenants: true, ExcludeRoles: []domain.Role{domain.RoleService}}, "user:tenant:T1", true},
-		{domain.RoleLegacyAdmin, "T2", ports.UserFilter{TenantID: "T2", ExcludeHiddenTenants: true}, "user:tenant:T2:legacy", true},
 		{domain.RoleUser, "T1", ports.UserFilter{TenantID: "T1"}, "user:tenant:T1:member", true},
 		{domain.RoleAdmin, "", ports.UserFilter{}, "", false},
 		{domain.RoleGuest, "", ports.UserFilter{}, "", false},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.role)+"/"+tt.tenantID, func(t *testing.T) {
-			filter, key, ok := buildUserFilter(&domain.Actor{Role: tt.role, TenantID: tt.tenantID})
+			filter, key, ok := buildUserFilter(&domain.Actor{Role: tt.role, Tier: tierFor(tt.role), TenantID: tt.tenantID})
 			assert.Equal(t, tt.wantOK, ok)
 			assert.Equal(t, tt.wantFilter, filter)
 			assert.Equal(t, tt.wantKey, key)

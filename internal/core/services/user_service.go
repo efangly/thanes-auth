@@ -16,6 +16,7 @@ type userService struct {
 	repo           ports.UserRepository
 	tenantRepo     ports.TenantRepository
 	departmentRepo ports.DepartmentRepository
+	roles          ports.RoleRepository
 	cache          ports.CachePort
 	upload         ports.FileUploadPort
 	hasher         ports.PasswordHasher
@@ -27,6 +28,7 @@ func NewUserService(
 	repo ports.UserRepository,
 	tenantRepo ports.TenantRepository,
 	departmentRepo ports.DepartmentRepository,
+	roles ports.RoleRepository,
 	cache ports.CachePort,
 	upload ports.FileUploadPort,
 	hasher ports.PasswordHasher,
@@ -36,6 +38,7 @@ func NewUserService(
 		repo:           repo,
 		tenantRepo:     tenantRepo,
 		departmentRepo: departmentRepo,
+		roles:          roles,
 		cache:          cache,
 		upload:         upload,
 		hasher:         hasher,
@@ -44,12 +47,9 @@ func NewUserService(
 }
 
 func (s *userService) Create(ctx context.Context, user *domain.User, caller *domain.Actor) (*domain.User, error) {
-	// An unset role falls back to the least-privileged one; a set role must be
-	// one we actually know about.
+	// An unset role falls back to the least-privileged one.
 	if user.Role == "" {
 		user.Role = domain.RoleGuest
-	} else if !user.Role.IsValid() {
-		return nil, fmt.Errorf("invalid role: %s", user.Role)
 	}
 	// Public registration (no caller) can only ever produce a GUEST without
 	// departments; an authenticated caller is held to its role ceiling.
@@ -60,10 +60,16 @@ func (s *userService) Create(ctx context.Context, user *domain.User, caller *dom
 		if len(user.DepartmentIDs) > 0 {
 			return nil, errors.New("you cannot assign departments")
 		}
-	} else if !caller.CanAssign(user.Role) {
+	} else if !caller.IsAdminTier() {
+		// Below the admin tier no role is within the ceiling.
 		return nil, fmt.Errorf("you cannot assign role %s", user.Role)
 	}
-	if err := s.checkTenantInScope(ctx, caller, user.TenantID); err != nil {
+	tenant, err := s.checkTenantInScope(ctx, caller, user.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	// The role must exist for the tenant's kind, and its tier decides the ceiling.
+	if err := s.checkAssignable(ctx, caller, tenant.Kind, user.Role); err != nil {
 		return nil, err
 	}
 	if err := s.checkDepartments(ctx, user.TenantID, user.DepartmentIDs); err != nil {
@@ -137,22 +143,49 @@ func (s *userService) RecordLogin(ctx context.Context, id string) error {
 	return nil
 }
 
-func (s *userService) AccessReport(ctx context.Context, caller *domain.Actor) ([]domain.User, error) {
+func (s *userService) AccessReport(ctx context.Context, caller *domain.Actor) ([]ports.AccessEntry, error) {
 	if caller == nil || !caller.IsAdminTier() {
 		return nil, errors.New("unauthorized")
 	}
 	filter, _, ok := buildUserFilter(caller)
 	if !ok {
-		return []domain.User{}, nil
+		return []ports.AccessEntry{}, nil
 	}
 	// Straight from the database: a review must not see a cached copy.
 	users, err := s.repo.FindAll(ctx, filter)
 	if err != nil {
 		return nil, err
 	}
+	// A role the catalogue no longer knows is reported with no tier, so the
+	// review shows it rather than hiding the user.
+	type roleKey struct {
+		kind domain.TenantKind
+		role domain.Role
+	}
+	resolved := map[roleKey]*domain.RoleDefinition{}
+	entries := make([]ports.AccessEntry, len(users))
+	for i, u := range users {
+		kind, err := tenantKindOf(ctx, s.tenantRepo, &u)
+		if err != nil {
+			return nil, err
+		}
+		key := roleKey{kind, u.Role}
+		def, seen := resolved[key]
+		if !seen {
+			if def, err = resolveRole(ctx, s.roles, kind, u.Role); err != nil {
+				return nil, err
+			}
+			resolved[key] = def
+		}
+		entry := ports.AccessEntry{User: u.WithoutSecrets(), Permissions: []string{}}
+		if def != nil {
+			entry.Tier, entry.Permissions = def.Tier, def.Permissions
+		}
+		entries[i] = entry
+	}
 	s.audit.Record(ctx, domain.AuditEntityUser, domain.AuditActionAccessReport, caller.ID, caller,
 		map[string]any{"users": len(users)})
-	return domain.UsersWithoutSecrets(users), nil
+	return entries, nil
 }
 
 func (s *userService) FindOne(ctx context.Context, id string, caller *domain.Actor) (*domain.User, error) {
@@ -219,8 +252,14 @@ func (s *userService) Update(ctx context.Context, id string, patch domain.UserPa
 	}
 
 	tenantID := target.TenantID
+	kind, err := tenantKindOf(ctx, s.tenantRepo, target)
+	if err != nil {
+		return nil, err
+	}
+	newKind := kind
 	if patch.TenantID != nil && *patch.TenantID != target.TenantID {
-		if err := s.checkTenantInScope(ctx, caller, *patch.TenantID); err != nil {
+		tenant, err := s.checkTenantInScope(ctx, caller, *patch.TenantID)
+		if err != nil {
 			return nil, err
 		}
 		// Department links belong to one tenant, so moving a user means saying
@@ -228,7 +267,12 @@ func (s *userService) Update(ctx context.Context, id string, patch domain.UserPa
 		if patch.DepartmentIDs == nil {
 			return nil, errors.New("departmentIds is required when changing tenant")
 		}
+		// Roles belong to one tenant kind in the same way.
+		if tenant.Kind != kind && patch.Role == nil && !target.Role.IsPlatform() {
+			return nil, errors.New("role is required when changing to a tenant of another kind")
+		}
 		tenantID = *patch.TenantID
+		newKind = tenant.Kind
 	}
 	if patch.DepartmentIDs != nil {
 		if err := s.checkDepartments(ctx, tenantID, *patch.DepartmentIDs); err != nil {
@@ -244,15 +288,14 @@ func (s *userService) Update(ctx context.Context, id string, patch domain.UserPa
 		}
 	}
 
-	if patch.Role != nil {
-		role := *patch.Role
-		if role != target.Role {
-			if caller.ID == id {
-				return nil, errors.New("you cannot change your own role")
-			}
-			if !caller.CanAssign(role) {
-				return nil, fmt.Errorf("you cannot assign role %s", role)
-			}
+	// The same role name can mean another tier in another kind, so a move
+	// re-checks it even when the name stays.
+	if patch.Role != nil && (*patch.Role != target.Role || newKind != kind) {
+		if caller.ID == id && *patch.Role != target.Role {
+			return nil, errors.New("you cannot change your own role")
+		}
+		if err := s.checkAssignable(ctx, caller, newKind, *patch.Role); err != nil {
+			return nil, err
 		}
 	}
 
@@ -334,15 +377,19 @@ func (s *userService) Restore(ctx context.Context, id string, caller *domain.Act
 	if target == nil || target.DeletedAt == nil || !canAdminTenant(caller, target.TenantID) {
 		return nil, errors.New("user not found")
 	}
-	if !caller.CanAssign(target.Role) {
-		return nil, errors.New("you do not have permission to modify this user")
-	}
 	tenant, err := s.tenantRepo.FindByID(ctx, target.TenantID)
 	if err != nil {
 		return nil, err
 	}
 	if tenant == nil {
 		return nil, errors.New("tenant not found")
+	}
+	tier, err := targetTier(ctx, s.roles, tenant.Kind, target.Role)
+	if err != nil {
+		return nil, err
+	}
+	if !caller.CanAssign(tier) {
+		return nil, errors.New("you do not have permission to modify this user")
 	}
 
 	user, err := s.repo.Restore(ctx, id)
@@ -385,34 +432,59 @@ func (s *userService) authorizeChange(ctx context.Context, id string, caller *do
 		if !canAdminTenant(caller, target.TenantID) {
 			return nil, errors.New("user not found")
 		}
-		if !caller.CanAssign(target.Role) {
+		kind, err := tenantKindOf(ctx, s.tenantRepo, target)
+		if err != nil {
+			return nil, err
+		}
+		tier, err := targetTier(ctx, s.roles, kind, target.Role)
+		if err != nil {
+			return nil, err
+		}
+		if !caller.CanAssign(tier) {
 			return nil, errors.New("you do not have permission to modify this user")
 		}
 	}
 	return target, nil
 }
 
-// checkTenantInScope rejects placing a user into a tenant that does not exist
-// or is outside the caller's scope. A nil caller is public registration, which
-// may not join a hidden tenant. A tenant that cannot be used reads as not found.
-func (s *userService) checkTenantInScope(ctx context.Context, caller *domain.Actor, tenantID string) error {
-	tenant, err := s.tenantRepo.FindByID(ctx, tenantID)
+// checkAssignable requires role to exist for kind and to be within caller's
+// role ceiling. A nil caller is public registration, which Create has already
+// confined to GUEST.
+func (s *userService) checkAssignable(ctx context.Context, caller *domain.Actor, kind domain.TenantKind, role domain.Role) error {
+	def, err := resolveRole(ctx, s.roles, kind, role)
 	if err != nil {
 		return err
 	}
+	if def == nil {
+		return fmt.Errorf("invalid role: %s", role)
+	}
+	if caller != nil && !caller.CanAssign(def.Tier) {
+		return fmt.Errorf("you cannot assign role %s", role)
+	}
+	return nil
+}
+
+// checkTenantInScope rejects placing a user into a tenant that does not exist
+// or is outside the caller's scope. A nil caller is public registration, which
+// may not join a hidden tenant. A tenant that cannot be used reads as not found.
+func (s *userService) checkTenantInScope(ctx context.Context, caller *domain.Actor, tenantID string) (*domain.Tenant, error) {
+	tenant, err := s.tenantRepo.FindByID(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
 	if tenant == nil {
-		return errors.New("tenant not found")
+		return nil, errors.New("tenant not found")
 	}
 	if caller == nil {
 		if tenant.Hidden {
-			return errors.New("tenant not found")
+			return nil, errors.New("tenant not found")
 		}
-		return nil
+		return tenant, nil
 	}
 	if !canAdminTenant(caller, tenant.ID) {
-		return errors.New("tenant not found")
+		return nil, errors.New("tenant not found")
 	}
-	return nil
+	return tenant, nil
 }
 
 // checkDepartments requires every department to exist and belong to tenantID.
@@ -436,16 +508,16 @@ func (s *userService) checkDepartments(ctx context.Context, tenantID string, ids
 	return nil
 }
 
-// buildUserFilter is the user listing each role may see, and its cache key. ok
-// is false when the caller's scope is empty (a tenant-scoped role whose token
+// buildUserFilter is the user listing each tier may see, and its cache key. ok
+// is false when the caller's scope is empty (a tenant-scoped tier whose token
 // names no tenant), which must list nothing rather than everything.
 func buildUserFilter(caller *domain.Actor) (filter ports.UserFilter, key string, ok bool) {
-	switch caller.Role {
-	case domain.RoleSuper:
+	switch caller.Tier {
+	case domain.TierSuper:
 		return ports.UserFilter{}, "user", true
-	case domain.RoleService:
+	case domain.TierService:
 		return ports.UserFilter{ExcludeHiddenTenants: true}, "user:service", true
-	case domain.RoleAdmin:
+	case domain.TierAdmin:
 		if caller.TenantID == "" {
 			return filter, "", false
 		}
@@ -454,11 +526,6 @@ func buildUserFilter(caller *domain.Actor) (filter ports.UserFilter, key string,
 			ExcludeHiddenTenants: true,
 			ExcludeRoles:         []domain.Role{domain.RoleService},
 		}, "user:tenant:" + caller.TenantID, true
-	case domain.RoleLegacyAdmin:
-		if caller.TenantID == "" {
-			return filter, "", false
-		}
-		return ports.UserFilter{TenantID: caller.TenantID, ExcludeHiddenTenants: true}, "user:tenant:" + caller.TenantID + ":legacy", true
 	}
 	if caller.TenantID == "" {
 		return filter, "", false

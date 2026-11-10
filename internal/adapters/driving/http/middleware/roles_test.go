@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func setupRolesApp(allowedRoles ...domain.Role) *fiber.App {
+func setupTiersApp(allowed ...domain.Tier) *fiber.App {
 	app := fiber.New()
 	app.Use(func(c fiber.Ctx) error {
 		// Simulate JWT auth middleware having run
@@ -25,18 +25,19 @@ func setupRolesApp(allowedRoles ...domain.Role) *fiber.App {
 		}
 		return c.Next()
 	})
-	app.Get("/protected", RolesGuard(allowedRoles...), func(c fiber.Ctx) error {
+	app.Get("/protected", TiersGuard(allowed...), func(c fiber.Ctx) error {
 		return c.SendString("ok")
 	})
 	return app
 }
 
-func TestRolesGuard_AllowedRole(t *testing.T) {
-	app := setupRolesApp(domain.RoleAdmin, domain.RoleSuper)
+func TestTiersGuard_AllowedTier(t *testing.T) {
+	app := setupTiersApp(domain.TierAdmin, domain.TierSuper)
 
 	claims := jwt.MapClaims{
 		"id":   "U1",
-		"role": "ADMIN",
+		"role": "LAB_HEAD",
+		"tier": "ADMIN",
 		"exp":  float64(time.Now().Add(1 * time.Hour).Unix()),
 	}
 	token := createTestToken(testJWTSecret, claims)
@@ -48,12 +49,13 @@ func TestRolesGuard_AllowedRole(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
-func TestRolesGuard_ForbiddenRole(t *testing.T) {
-	app := setupRolesApp(domain.RoleSuper) // Only SUPER allowed
+func TestTiersGuard_ForbiddenTierWhateverTheRole(t *testing.T) {
+	app := setupTiersApp(domain.TierSuper) // Only SUPER allowed
 
 	claims := jwt.MapClaims{
 		"id":   "U1",
-		"role": "USER",
+		"role": "SUPER",
+		"tier": "MEMBER",
 		"exp":  float64(time.Now().Add(1 * time.Hour).Unix()),
 	}
 	token := createTestToken(testJWTSecret, claims)
@@ -65,8 +67,8 @@ func TestRolesGuard_ForbiddenRole(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 }
 
-func TestRolesGuard_NoUser(t *testing.T) {
-	app := setupRolesApp(domain.RoleAdmin)
+func TestTiersGuard_NoUser(t *testing.T) {
+	app := setupTiersApp(domain.TierAdmin)
 
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	// No X-Test-Token header → no user in Locals
@@ -75,13 +77,14 @@ func TestRolesGuard_NoUser(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
-func TestRolesGuard_NoRolesSpecified(t *testing.T) {
-	// When no roles are specified, all authenticated users pass
-	app := setupRolesApp() // empty roles
+func TestTiersGuard_NoTiersSpecified(t *testing.T) {
+	// When no tiers are specified, all authenticated users pass
+	app := setupTiersApp() // empty tiers
 
 	claims := jwt.MapClaims{
 		"id":   "U1",
 		"role": "GUEST",
+		"tier": "GUEST",
 		"exp":  float64(time.Now().Add(1 * time.Hour).Unix()),
 	}
 	token := createTestToken(testJWTSecret, claims)
