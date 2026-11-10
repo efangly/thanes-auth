@@ -13,14 +13,13 @@ jobs:
       IMAGE_NAME: siamatic/smtrack-auth-service:3.0.0
       # The Kubernetes manifests live in a separate GitOps repository; this job
       # rewrites the image tag there after a successful push.
-      # TODO: fill in the repository ("owner/name") and create the repository
-      # secret GITOPS_TOKEN: a token with contents:write on that repository
-      # (fine-grained PAT or GitHub App token). The default GITHUB_TOKEN
-      # cannot push to another repository.
-      GITOPS_REPO: ""
+      # Needs the repository secret GITOPS_TOKEN: a token with contents:write
+      # on that repository (fine-grained PAT or GitHub App token). The default
+      # GITHUB_TOKEN cannot push to another repository.
+      GITOPS_REPO: "efangly/thanes-auth"
       # Directory inside the GitOps repository that holds this service's
-      # manifests ("." = the repository root).
-      GITOPS_PATH: "."
+      # manifests; Argo CD syncs it (argocd/application.yaml there).
+      GITOPS_PATH: "thanes-auth"
     steps:
     - uses: actions/checkout@v4
     # The image is only built and pushed (and the GitOps manifests only
@@ -82,23 +81,21 @@ jobs:
         fi
         git commit -m "auth: ${{ env.IMAGE_NAME }}" -m "From ${{ github.repository }}@${{ github.sha }}"
         git push
-    - name: Send success message to slack
-      id: slack
-      uses: slackapi/slack-github-action@v1.27.0
-      with:
-        payload: |
-          {
-            "text": "GitHub Action build ${{ env.IMAGE_NAME }} result: ${{ job.status }} 🖕🖕🖕🖕",
-            "blocks": [
-              {
-                "type": "section",
-                "text": {
-                  "type": "mrkdwn",
-                  "text": "GitHub Action build ${{ env.IMAGE_NAME }} result: ${{ job.status }} 🖕🖕🖕🖕"
-                }
-              }
-            ]
-          }
+    # Reports failures too (always()), so a broken build is not silent.
+    # Needs the repository secrets TELEGRAM_BOT_TOKEN (from @BotFather) and
+    # TELEGRAM_CHAT_ID (the chat or group the bot posts to).
+    - name: Send result to Telegram
+      if: always()
       env:
-        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
-        SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        TEXT: "GitHub Action build ${{ env.IMAGE_NAME }} result: ${{ job.status }} 🖕🖕🖕🖕"
+      run: |
+        if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+          echo "::warning::TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not set; no notification sent"
+          exit 0
+        fi
+        curl -sS -f -o /dev/null \
+          "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+          --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+          --data-urlencode "text=${TEXT}"
