@@ -193,7 +193,7 @@ func (s *authService) RefreshTokens(ctx context.Context, token string) (*ports.R
 	}
 	userID := claims.UserID
 
-	// Fail closed: if revocation cannot be checked, the token is not honoured.
+	// A store outage skips this check (see checkNotRevoked); a revoked token is still refused.
 	if err := s.checkNotRevoked(ctx, claims); err != nil {
 		return nil, err
 	}
@@ -291,18 +291,23 @@ func (s *authService) Logout(ctx context.Context, refreshToken string, caller *d
 }
 
 // checkNotRevoked rejects a refresh token that was logged out or predates the user's last
-// password change. The messages are domain errors; store faults are wrapped.
+// password change. When the session store cannot be read it lets the refresh through and
+// logs: refusing would sign everyone out 15 minutes into a Redis outage. The cost is that,
+// during the outage, a token revoked before or during it can still be refreshed; the user's
+// own record (status, role, tenant) is still re-read from the database.
 func (s *authService) checkNotRevoked(ctx context.Context, claims *ports.RefreshClaims) error {
 	revoked, err := s.sessions.IsTokenRevoked(ctx, claims.TokenID)
 	if err != nil {
-		return fmt.Errorf("check token revocation: %w", err)
+		logger.Warn("Session store unavailable: refreshing without the revocation check", "error", err)
+		return nil
 	}
 	if revoked {
 		return errors.New("invalid or expired refresh token")
 	}
 	after, err := s.sessions.TokensValidAfter(ctx, claims.UserID)
 	if err != nil {
-		return fmt.Errorf("check token revocation: %w", err)
+		logger.Warn("Session store unavailable: refreshing without the password-change check", "error", err)
+		return nil
 	}
 	if !after.IsZero() && claims.IssuedAt.Unix() < after.Unix() {
 		return errors.New("invalid or expired refresh token")

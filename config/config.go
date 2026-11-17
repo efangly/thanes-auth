@@ -19,11 +19,11 @@ type Config struct {
 	JWTRefreshSecret  string
 	ExpireTime        string
 	RefreshExpireTime string
-	RedisHost         string
-	RedisPassword     string
-	RabbitMQURL       string
-	NodeEnv           string
-	LogLevel          string
+	// RedisURL is redis://[user:password@]host:port[/db] (rediss:// for TLS).
+	RedisURL    string
+	RabbitMQURL string
+	NodeEnv     string
+	LogLevel    string
 	// TrustedProxies lists the CIDR ranges or addresses of the proxies in
 	// front of this service (KrakenD), from comma-separated TRUSTED_PROXIES.
 	// Empty means the TCP peer is the client.
@@ -104,8 +104,7 @@ func Load() *Config {
 		S3Bucket:           getEnv("S3_BUCKET", ""),
 		ImageEncryptionKey: getEnv("IMAGE_ENCRYPTION_KEY", ""),
 		ImageBaseURL:       getEnv("IMAGE_BASE_URL", ""),
-		RedisHost:          getEnv("REDIS_HOST", "localhost:6379"),
-		RedisPassword:      getEnv("REDIS_PASSWORD", ""),
+		RedisURL:           getEnv("REDIS_URL", "redis://localhost:6379/0"),
 		RabbitMQURL:        getEnv("RABBITMQ", ""),
 		NodeEnv:            getEnv("NODE_ENV", "production"),
 		LogLevel:           getEnv("LOG_LEVEL", "warn"),

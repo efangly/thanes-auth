@@ -8,7 +8,7 @@
 // The suite needs:
 //
 //   - The service's environment (DATABASE_URL, JWT_SECRET, JWT_REFRESH_SECRET,
-//     REDIS_HOST, ...) in the process environment or the repo's .env. Use an
+//     REDIS_URL, ...) in the process environment or the repo's .env. Use an
 //     empty throwaway database: the suite creates tenants, departments and
 //     users there, and audit_logs rows can never be deleted.
 //

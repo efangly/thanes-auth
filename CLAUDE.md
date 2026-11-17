@@ -178,10 +178,18 @@ These were bugs once. Do not regress them.
   still costs a hash. A Redis outage lets logins through (logged); it must not lock everyone out.
 - **Sessions:** access tokens last 15 minutes, refresh tokens 7 days and carry a `jti`.
   `POST /auth/logout` denylists the refresh token's `jti`; a password reset sets the user's
-  "tokens valid after" mark. Both are checked in `authService.RefreshTokens`, which **fails
-  closed** when Redis cannot be read. Access tokens are not checked against Redis (they simply
-  expire), so a logout takes full effect within 15 minutes. `SessionStore` keys start with
-  `auth:` so `CachePort.Del` can never clear them.
+  "tokens valid after" mark. Both are checked in `authService.RefreshTokens`, which **lets
+  the refresh through (and logs)** when Redis cannot be read, because refusing would sign
+  everyone out 15 minutes into an outage; the user is still re-read from the database, so a
+  deactivated account is refused. Logout and password reset still return an error when Redis
+  cannot be written, because they cannot honestly promise the revocation. Access tokens are not
+  checked against Redis (they simply expire), so a logout takes full effect within 15 minutes.
+  `SessionStore` keys start with `auth:` so `CachePort.Del` can never clear them.
+- **Redis is optional for availability.** `REDIS_URL` is the only Redis setting (`redis://[user:password@]host:port/db`).
+  The cache falls back to the database, lockout lets logins through, and the Redis client has
+  short timeouts plus a circuit breaker (`adapters/driven/cache/breaker.go`) so an outage costs
+  one failed call per 5 seconds, not a timeout per call. Do not add a Redis call whose failure
+  must fail the request without deciding that on purpose.
 - **Audit trail:** `middleware.RequestMeta` puts IP (trusted-proxy rules), user agent and request
   id into the context; `auditService.Record` copies them and the caller's tenant onto the row.
   Events: CREATE/UPDATE/DELETE/RESTORE/PURGE plus LOGIN_SUCCESS/LOGIN_FAILURE (entity id = the

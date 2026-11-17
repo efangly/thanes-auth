@@ -24,11 +24,27 @@ type redisAdapter struct {
 // session store (failed logins, revoked tokens), which share a server but not a keyspace:
 // session keys start with "auth:", and cache invalidation is by other prefixes.
 func NewRedisAdapter(cfg *config.Config) (ports.CachePort, ports.SessionStore) {
-	client := redis.NewClient(&redis.Options{
-		Addr:     cfg.RedisHost,
-		Password: cfg.RedisPassword,
-		DB:       0,
-	})
+	opts, err := redis.ParseURL(cfg.RedisURL)
+	if err != nil {
+		// The error text can echo the URL, which holds the password: log only that it failed.
+		logger.Fatal("REDIS_URL is not a valid redis:// or rediss:// URL")
+	}
+	// Short timeouts and one retry: Redis is an optimisation, and a hung server must not hold
+	// requests for the go-redis defaults (5 s dial, 3 s read, 3 retries).
+	if opts.DialTimeout == 0 {
+		opts.DialTimeout = time.Second
+	}
+	if opts.ReadTimeout == 0 {
+		opts.ReadTimeout = 2 * time.Second
+	}
+	if opts.WriteTimeout == 0 {
+		opts.WriteTimeout = 2 * time.Second
+	}
+	if opts.MaxRetries == 0 {
+		opts.MaxRetries = 1
+	}
+	client := redis.NewClient(opts)
+	client.AddHook(newBreaker())
 
 	ctx := context.Background()
 	if err := client.Ping(ctx).Err(); err != nil {
@@ -74,11 +90,11 @@ func (r *redisAdapter) Del(ctx context.Context, prefix string) error {
 	for {
 		keys, next, err := r.client.Scan(ctx, cursor, prefix+"*", scanBatchSize).Result()
 		if err != nil {
-			return err
+			return fmt.Errorf("cache scan %s: %w", prefix, err)
 		}
 		if len(keys) > 0 {
 			if err := r.client.Del(ctx, keys...).Err(); err != nil {
-				return err
+				return fmt.Errorf("cache delete %s: %w", prefix, err)
 			}
 		}
 		if next == 0 {

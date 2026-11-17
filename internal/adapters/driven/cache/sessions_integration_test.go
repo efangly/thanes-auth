@@ -20,7 +20,7 @@ func TestSessionStore(t *testing.T) {
 		t.Skip("REDIS_TEST_ADDR not set")
 	}
 	ctx := context.Background()
-	c, store := NewRedisAdapter(&config.Config{RedisHost: addr})
+	c, store := NewRedisAdapter(&config.Config{RedisURL: "redis://" + addr})
 
 	// The failure window starts at the first failure and is not extended by later ones.
 	n, err := store.RecordLoginFailure(ctx, "alice", 300*time.Millisecond)

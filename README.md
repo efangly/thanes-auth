@@ -170,14 +170,14 @@ EXPIRE_TIME=15m
 REFRESH_EXPIRE_TIME=7d
 BCRYPT_COST=12          # minimum 12
 
-# Redis
-REDIS_HOST=localhost:6379
-REDIS_PASSWORD=
+# Redis: redis://[user:password@]host:6379/0 (rediss:// for TLS)
+REDIS_URL=redis://localhost:6379/0
 
 # RabbitMQ
 RABBITMQ=amqp://user:password@host:5672/
 
-# Pictures (MinIO, encrypted with AES-256-GCM; the bucket is created at startup if missing)
+# Pictures (MinIO/RustFS, encrypted with AES-256-GCM; the bucket is created at startup if missing.
+# For RustFS, scripts/create-rustfs-bucket.sh creates the bucket and a bucket-only user/password.)
 S3_ENDPOINT=http://localhost:9000
 S3_ACCESS_KEY=...
 S3_SECRET_KEY=...

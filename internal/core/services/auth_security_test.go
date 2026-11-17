@@ -126,8 +126,22 @@ func TestAuthService_Logout_InvalidToken(t *testing.T) {
 	assert.Error(t, svc.Logout(context.Background(), "bad", &domain.Actor{ID: "U1"}))
 }
 
-func TestAuthService_Refresh_FailsClosedWhenStoreIsDown(t *testing.T) {
+// A Redis outage must not sign everybody out when their access tokens expire.
+func TestAuthService_Refresh_ContinuesWhenStoreIsDown(t *testing.T) {
 	svc, _, _, tokens, _, sessions, _ := newTestAuthServiceAll(activeUser())
+	tokens.refreshUserID = "U1"
+	sessions.err = errors.New("redis down")
+
+	_, err := svc.RefreshTokens(context.Background(), "tok")
+	assert.NoError(t, err)
+}
+
+// The user is still read from the database, so a deactivated account loses access even then.
+func TestAuthService_Refresh_StoreDown_StillRejectsDeactivatedUser(t *testing.T) {
+	inactive := &mockUserService{FindByIDFn: func(context.Context, string) (*domain.User, error) {
+		return &domain.User{ID: "U1", Status: false, Role: domain.RoleUser, TenantID: "T1"}, nil
+	}}
+	svc, _, _, tokens, _, sessions, _ := newTestAuthServiceAll(inactive)
 	tokens.refreshUserID = "U1"
 	sessions.err = errors.New("redis down")
 
